@@ -34,25 +34,73 @@ function formatElevation(meters: number, unit: ElevationUnit): number {
   return Math.round(value * 10) / 10;
 }
 
+// Conversion constants for input parsing
+const FT_TO_M = 0.3048;
+const MI_TO_KM = 1.60934;
+
 /**
- * Convert elevation string (e.g., "123m" or "-45m") to number
+ * Convert elevation string to meters
+ * Handles: "123m", "-45m", "369'", "+2084'", "100ft"
  */
 function convertElevation(elevStr: string | null | undefined): number {
   if (!elevStr) return 0;
-  const match = String(elevStr).match(/([-\d.]+)m/);
-  return match ? parseFloat(match[1]) : 0;
+  const str = String(elevStr).trim();
+
+  // Try meters first (e.g., "123m", "-45m")
+  const mMatch = str.match(/([-\d.]+)\s*m$/i);
+  if (mMatch) {
+    return parseFloat(mMatch[1]);
+  }
+
+  // Try feet with apostrophe (e.g., "369'", "+2084'", "-1739'")
+  const ftMatch = str.match(/([-+]?\d[\d,]*)'?$/);
+  if (ftMatch) {
+    const value = parseFloat(ftMatch[1].replace(/,/g, ''));
+    return value * FT_TO_M;
+  }
+
+  // Try feet with "ft" suffix
+  const ftSuffixMatch = str.match(/([-\d.]+)\s*ft/i);
+  if (ftSuffixMatch) {
+    return parseFloat(ftSuffixMatch[1]) * FT_TO_M;
+  }
+
+  return 0;
 }
 
 /**
- * Convert distance string (e.g., "5.2km" or "500m") to kilometers
+ * Convert distance string to kilometers
+ * Handles: "5.2km", "500m", "50.7 mi"
  */
 function convertDistance(distStr: string | null | undefined): number {
   if (!distStr) return 0;
-  const match = String(distStr).match(/([\d.]+)\s*(km|m)/);
-  if (!match) return 0;
-  const [, value, unit] = match;
-  const numValue = parseFloat(value);
-  return unit === 'km' ? numValue : numValue / 1000;
+  const str = String(distStr).trim();
+
+  // Try kilometers (e.g., "5.2km", "5.2 km")
+  const kmMatch = str.match(/([\d.]+)\s*km/i);
+  if (kmMatch) {
+    return parseFloat(kmMatch[1]);
+  }
+
+  // Try miles (e.g., "50.7 mi", "50.7mi")
+  const miMatch = str.match(/([\d.]+)\s*mi/i);
+  if (miMatch) {
+    return parseFloat(miMatch[1]) * MI_TO_KM;
+  }
+
+  // Try meters (e.g., "500m", "500 m")
+  const mMatch = str.match(/([\d.]+)\s*m$/i);
+  if (mMatch) {
+    return parseFloat(mMatch[1]) / 1000;
+  }
+
+  // Try feet (e.g., "1634 ft", "1634ft") - convert to km
+  const ftMatch = str.match(/([\d.]+)\s*ft/i);
+  if (ftMatch) {
+    return (parseFloat(ftMatch[1]) * FT_TO_M) / 1000;
+  }
+
+  return 0;
 }
 
 /**
