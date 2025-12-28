@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GPX Tools - Split GPX & Process Caltopo Plans</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>GPX Tools</h1>
+      <p class="subtitle">Split GPX files for bike computers & process Caltopo travel plans</p>
+    </header>
+
+    <nav class="tabs">
+      <button class="tab active" data-tab="gpx">GPX Splitter</button>
+      <button class="tab" data-tab="csv">Travel Plan Processor</button>
+    </nav>
+
+    <!-- GPX Splitter Panel -->
+    <section id="gpx-panel" class="panel active">
+      <div class="upload-area" id="gpx-upload-area">
+        <div class="upload-content">
+          <span class="upload-icon">📂</span>
+          <p>Drag & drop a GPX file here</p>
+          <p class="upload-hint">or click to select</p>
+          <input type="file" id="gpx-file-input" accept=".gpx" hidden>
+        </div>
+        <div class="file-info" id="gpx-file-info" hidden>
+          <span class="file-name"></span>
+          <span class="file-size"></span>
+          <button class="clear-btn" title="Clear">✕</button>
+        </div>
+      </div>
+
+      <div class="options">
+        <h3>Options</h3>
+        <div class="option-row">
+          <label for="max-points">Max points per file:</label>
+          <input type="number" id="max-points" value="5000" min="100" max="50000">
+        </div>
+        <div class="option-row">
+          <label for="waypoint-distance">Waypoint distance (km):</label>
+          <input type="number" id="waypoint-distance" value="5" min="0.1" max="100" step="0.1">
+        </div>
+      </div>
+
+      <button class="process-btn" id="gpx-process-btn" disabled>Split GPX</button>
+
+      <div class="results" id="gpx-results" hidden>
+        <h3>Results</h3>
+        <div class="stats" id="gpx-stats"></div>
+        <div class="file-list" id="gpx-file-list"></div>
+        <button class="download-all-btn" id="gpx-download-all">Download All as ZIP</button>
+      </div>
+    </section>
+
+    <!-- CSV Processor Panel -->
+    <section id="csv-panel" class="panel">
+      <div class="upload-area" id="csv-upload-area">
+        <div class="upload-content">
+          <span class="upload-icon">📂</span>
+          <p>Drag & drop a Caltopo CSV here</p>
+          <p class="upload-hint">or click to select</p>
+          <input type="file" id="csv-file-input" accept=".csv" hidden>
+        </div>
+        <div class="file-info" id="csv-file-info" hidden>
+          <span class="file-name"></span>
+          <span class="file-size"></span>
+          <button class="clear-btn" title="Clear">✕</button>
+        </div>
+      </div>
+
+      <div class="options">
+        <h3>Options</h3>
+        <div class="option-row">
+          <label for="resupply-keywords">Resupply keywords:</label>
+          <input type="text" id="resupply-keywords"
+            value="grocer, market, foodland, iga, wool, coles, general, servo"
+            placeholder="Comma-separated keywords">
+        </div>
+        <div class="option-row checkbox-row">
+          <label>
+            <input type="checkbox" id="include-end" checked>
+            Include "End" as resupply point
+          </label>
+        </div>
+        <div class="option-row">
+          <label for="distance-unit">Distance unit:</label>
+          <select id="distance-unit">
+            <option value="km">Kilometers (km)</option>
+            <option value="mi">Miles (mi)</option>
+          </select>
+        </div>
+        <div class="option-row">
+          <label for="elevation-unit">Elevation unit:</label>
+          <select id="elevation-unit">
+            <option value="m">Meters (m)</option>
+            <option value="ft">Feet (ft)</option>
+          </select>
+        </div>
+        <div class="option-row">
+          <label for="csv-delimiter">CSV delimiter:</label>
+          <select id="csv-delimiter">
+            <option value=",">Comma (,)</option>
+            <option value=";">Semicolon (;)</option>
+            <option value="&#9;">Tab</option>
+          </select>
+        </div>
+      </div>
+
+      <button class="process-btn" id="csv-process-btn" disabled>Process Travel Plan</button>
+
+      <div class="results" id="csv-results" hidden>
+        <h3>Results</h3>
+        <div class="stats" id="csv-stats"></div>
+        <div class="file-list" id="csv-file-list"></div>
+        <button class="download-all-btn" id="csv-download-all">Download All as ZIP</button>
+      </div>
+    </section>
+
+    <footer>
+      <p>All processing happens locally in your browser. Your files are never uploaded.</p>
+    </footer>
+  </div>
+
+  <script type="module" src="./app.ts"></script>
+</body>
+</html>
