@@ -1,0 +1,6 @@
+name,lat,lon,type,description
+Trailhead,-35.2809,149.1300,trailhead,Start of the example trail
+Water Tank,-35.2890,149.1430,water,Reliable water source
+Campsite 1,-35.3010,149.1570,camping,Flat area suitable for camping
+Lookout Point,-35.3100,149.1660,viewpoint,Scenic views of the valley
+Trail End,-35.3160,149.1720,trailhead,End of the example trail

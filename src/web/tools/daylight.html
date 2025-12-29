@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Daylight Calculator - GPX Tools</title>
+  <link rel="stylesheet" href="../styles.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <nav class="breadcrumb">
+        <a href="../">Home</a> / <a href="./">Tools</a> / <span>Daylight Calculator</span>
+      </nav>
+      <h1>Daylight Calculator</h1>
+      <p class="subtitle">Calculate sunrise, sunset, and hiking hours along your route</p>
+    </header>
+
+    <section class="panel active">
+      <div class="upload-area" id="gpx-upload-area">
+        <div class="upload-content">
+          <span class="upload-icon">📂</span>
+          <p>Drag & drop a GPX file here</p>
+          <p class="upload-hint">or click to select</p>
+          <input type="file" id="gpx-file-input" accept=".gpx" hidden>
+        </div>
+        <div class="file-info" id="gpx-file-info" hidden>
+          <span class="file-name"></span>
+          <span class="file-size"></span>
+          <button class="clear-btn" title="Clear">✕</button>
+        </div>
+      </div>
+
+      <div class="options">
+        <h3>Trip Settings</h3>
+        <div class="option-row">
+          <label for="start-date">Start date:</label>
+          <input type="date" id="start-date">
+        </div>
+        <div class="option-row">
+          <label for="daily-target">Daily target distance (km):</label>
+          <input type="number" id="daily-target" value="25" min="5" max="100" step="1">
+        </div>
+        <div class="option-row">
+          <label for="hiking-speed">Average hiking speed (km/h):</label>
+          <input type="number" id="hiking-speed" value="4" min="1" max="10" step="0.5">
+        </div>
+        <div class="option-row">
+          <label for="start-offset">Minutes after sunrise to start:</label>
+          <input type="number" id="start-offset" value="30" min="0" max="120" step="15">
+        </div>
+        <div class="option-row">
+          <label for="end-offset">Minutes before sunset to end:</label>
+          <input type="number" id="end-offset" value="30" min="0" max="120" step="15">
+        </div>
+      </div>
+
+      <button class="process-btn" id="calculate-btn" disabled>Calculate Daylight Plan</button>
+
+      <div class="results" id="results" hidden>
+        <h3>Trip Summary</h3>
+        <div class="summary-stats">
+          <div class="stat-card">
+            <span class="stat-value" id="total-days"></span>
+            <span class="stat-label">Total Days</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-value" id="total-distance"></span>
+            <span class="stat-label">Total Distance</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-value" id="night-hiking-days"></span>
+            <span class="stat-label">Night Hiking Days</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-value" id="shortest-day"></span>
+            <span class="stat-label">Shortest Day</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-value" id="longest-day"></span>
+            <span class="stat-label">Longest Day</span>
+          </div>
+        </div>
+
+        <h3>Daily Breakdown</h3>
+        <div class="day-list" id="day-list"></div>
+
+        <div class="download-buttons">
+          <button class="download-btn" id="download-csv">Download CSV</button>
+        </div>
+      </div>
+    </section>
+
+    <footer>
+      <p>Sun calculations use <a href="https://github.com/mourner/suncalc" target="_blank">SunCalc</a>. All processing happens in your browser.</p>
+      <p><a href="./">Back to Tools</a></p>
+    </footer>
+  </div>
+
+  <script type="module" src="./daylight.ts"></script>
+</body>
+</html>

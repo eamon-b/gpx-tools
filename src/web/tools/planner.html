@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Travel Plan Processor - GPX Tools</title>
+  <link rel="stylesheet" href="../styles.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <nav class="breadcrumb">
+        <a href="../">Home</a> / <a href="./">Tools</a> / <span>Travel Plan Processor</span>
+      </nav>
+      <h1>Travel Plan Processor</h1>
+      <p class="subtitle">Process Caltopo CSV exports or GPX files to generate travel datasheets</p>
+    </header>
+
+    <section class="panel active">
+      <div class="upload-area" id="csv-upload-area">
+        <div class="upload-content">
+          <span class="upload-icon">📂</span>
+          <p>Drag & drop a Caltopo CSV or GPX file here</p>
+          <p class="upload-hint">or click to select</p>
+          <input type="file" id="csv-file-input" accept=".csv,.gpx" hidden>
+        </div>
+        <div class="file-info" id="csv-file-info" hidden>
+          <span class="file-name"></span>
+          <span class="file-size"></span>
+          <button class="clear-btn" title="Clear">✕</button>
+        </div>
+      </div>
+
+      <div class="options">
+        <h3>Options</h3>
+        <div class="option-row gpx-only-option">
+          <label for="waypoint-max-distance">Waypoint max distance from track (m):</label>
+          <input type="number" id="waypoint-max-distance" value="200" min="10" max="5000" step="10">
+        </div>
+        <div class="option-row">
+          <label for="resupply-keywords">Resupply keywords:</label>
+          <input type="text" id="resupply-keywords"
+            value="grocer, market, foodland, iga, wool, coles, general, servo"
+            placeholder="Comma-separated keywords">
+        </div>
+        <div class="option-row checkbox-row gpx-only-option">
+          <label>
+            <input type="checkbox" id="include-start">
+            Include first waypoint as resupply point
+          </label>
+        </div>
+        <div class="option-row checkbox-row">
+          <label>
+            <input type="checkbox" id="include-end" checked>
+            Include last waypoint as resupply point
+          </label>
+        </div>
+        <div class="option-row">
+          <label for="distance-unit">Output distance unit:</label>
+          <select id="distance-unit">
+            <option value="km">Kilometers (km)</option>
+            <option value="mi">Miles (mi)</option>
+          </select>
+        </div>
+        <div class="option-row">
+          <label for="elevation-unit">Output elevation unit:</label>
+          <select id="elevation-unit">
+            <option value="m">Meters (m)</option>
+            <option value="ft">Feet (ft)</option>
+          </select>
+        </div>
+        <div class="option-row">
+          <label for="csv-delimiter">CSV delimiter:</label>
+          <select id="csv-delimiter">
+            <option value=",">Comma (,)</option>
+            <option value=";">Semicolon (;)</option>
+            <option value="&#9;">Tab</option>
+          </select>
+        </div>
+      </div>
+
+      <button class="process-btn" id="csv-process-btn" disabled>Process Travel Plan</button>
+
+      <div class="results" id="csv-results" hidden>
+        <h3>Results</h3>
+        <div class="stats" id="csv-stats"></div>
+        <div class="file-list" id="csv-file-list"></div>
+        <button class="download-all-btn" id="csv-download-all">Download All as ZIP</button>
+      </div>
+    </section>
+
+    <footer>
+      <p>All processing happens locally in your browser. Your files are never uploaded.</p>
+      <p><a href="./">Back to Tools</a></p>
+    </footer>
+  </div>
+
+  <script type="module" src="./planner.ts"></script>
+</body>
+</html>
