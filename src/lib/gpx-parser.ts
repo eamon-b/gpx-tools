@@ -1,7 +1,15 @@
-import type { GpxData, GpxTrack, GpxWaypoint, GpxPoint } from './types';
+import type { GpxData, GpxTrack, GpxRoute, GpxWaypoint, GpxPoint } from './types';
 
 /**
- * Parse GPX XML content into structured data
+ * Parse GPX XML content into structured data.
+ *
+ * Supports:
+ * - <trk> elements (tracks with track segments)
+ * - <rte> elements (routes with route points)
+ * - <wpt> elements (waypoints)
+ *
+ * Routes (<rte>) are converted to a track-like structure for compatibility
+ * with existing processing functions.
  */
 export function parseGpx(xml: string): GpxData {
   const parser = new DOMParser();
@@ -13,6 +21,7 @@ export function parseGpx(xml: string): GpxData {
     throw new Error('Invalid GPX XML: ' + parseError.textContent);
   }
 
+  // Parse tracks (<trk> elements with <trkseg> containing <trkpt>)
   const tracks: GpxTrack[] = Array.from(doc.querySelectorAll('trk')).map(trk => ({
     name: trk.querySelector('name')?.textContent || '',
     segments: Array.from(trk.querySelectorAll('trkseg')).map(seg => ({
@@ -25,6 +34,18 @@ export function parseGpx(xml: string): GpxData {
     }))
   }));
 
+  // Parse routes (<rte> elements with <rtept> children)
+  const routes: GpxRoute[] = Array.from(doc.querySelectorAll('rte')).map(rte => ({
+    name: rte.querySelector('name')?.textContent || '',
+    points: Array.from(rte.querySelectorAll('rtept')).map(pt => ({
+      lat: parseFloat(pt.getAttribute('lat') || '0'),
+      lon: parseFloat(pt.getAttribute('lon') || '0'),
+      ele: parseFloat(pt.querySelector('ele')?.textContent || '0'),
+      time: pt.querySelector('time')?.textContent || null
+    }))
+  }));
+
+  // Parse waypoints (<wpt> elements)
   const waypoints: GpxWaypoint[] = Array.from(doc.querySelectorAll('wpt')).map(wpt => ({
     lat: parseFloat(wpt.getAttribute('lat') || '0'),
     lon: parseFloat(wpt.getAttribute('lon') || '0'),
@@ -33,7 +54,7 @@ export function parseGpx(xml: string): GpxData {
     desc: wpt.querySelector('desc')?.textContent || ''
   }));
 
-  return { tracks, waypoints };
+  return { tracks, routes, waypoints };
 }
 
 /**

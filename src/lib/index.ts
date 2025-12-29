@@ -4,6 +4,7 @@ export type {
   GpxWaypoint,
   GpxSegment,
   GpxTrack,
+  GpxRoute,
   GpxData,
   SplitOptions,
   SplitResult,
@@ -14,6 +15,8 @@ export type {
   DistanceUnit,
   ElevationUnit,
   CsvDelimiter,
+  GpxProcessOptions,
+  WaypointVisit,
 } from './types';
 
 // GPX Parser
@@ -36,3 +39,12 @@ export {
   CSV_PROCESSOR_DEFAULTS,
   DEFAULT_RESUPPLY_KEYWORDS,
 } from './csv-processor';
+
+// GPX Datasheet Processor
+export {
+  processGpxTravelPlan,
+  findWaypointVisits,
+  calculateSegmentStats,
+  GPX_DATASHEET_DEFAULTS,
+  GPX_DEFAULT_RESUPPLY_KEYWORDS,
+} from './gpx-datasheet';

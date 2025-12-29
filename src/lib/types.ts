@@ -23,8 +23,14 @@ export interface GpxTrack {
   segments: GpxSegment[];
 }
 
+export interface GpxRoute {
+  name: string;
+  points: GpxPoint[];
+}
+
 export interface GpxData {
   tracks: GpxTrack[];
+  routes: GpxRoute[];
   waypoints: GpxWaypoint[];
 }
 
@@ -87,4 +93,21 @@ export interface ProcessResult {
     totalAscent: number;
     totalDescent: number;
   };
+}
+
+// GPX Datasheet Types
+export interface GpxProcessOptions {
+  resupplyKeywords: string[];
+  includeEndAsResupply: boolean;
+  includeStartAsResupply: boolean;
+  distanceUnit: DistanceUnit;
+  elevationUnit: ElevationUnit;
+  csvDelimiter: CsvDelimiter;
+  waypointMaxDistance: number; // meters - max distance from track to include waypoint
+}
+
+export interface WaypointVisit {
+  waypoint: GpxWaypoint;
+  trackIndex: number;           // position along track where visit occurs
+  distanceFromTrack: number;    // actual distance from track point to waypoint
 }

@@ -323,6 +323,19 @@ footer {
   font-size: 0.875rem;
 }
 
+/* GPX-only options are hidden by default, shown when a GPX file is selected */
+.gpx-only-option {
+  display: none;
+}
+
+.gpx-only-option.visible {
+  display: flex;
+}
+
+.gpx-only-option.visible.checkbox-row {
+  display: block;
+}
+
 @media (max-width: 480px) {
   .option-row {
     flex-direction: column;

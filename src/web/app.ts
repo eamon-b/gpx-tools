@@ -1,4 +1,4 @@
-import { splitGpx, processTravelPlan, type SplitResult, type ProcessResult, type DistanceUnit, type ElevationUnit, type CsvDelimiter } from '../lib';
+import { splitGpx, processTravelPlan, processGpxTravelPlan, type SplitResult, type ProcessResult, type DistanceUnit, type ElevationUnit, type CsvDelimiter } from '../lib';
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
 
@@ -28,16 +28,31 @@ const csvStats = document.getElementById('csv-stats')!;
 const csvFileList = document.getElementById('csv-file-list')!;
 const csvDownloadAll = document.getElementById('csv-download-all')!;
 const resupplyKeywordsInput = document.getElementById('resupply-keywords') as HTMLInputElement;
+const includeStartCheckbox = document.getElementById('include-start') as HTMLInputElement;
 const includeEndCheckbox = document.getElementById('include-end') as HTMLInputElement;
 const distanceUnitSelect = document.getElementById('distance-unit') as HTMLSelectElement;
 const elevationUnitSelect = document.getElementById('elevation-unit') as HTMLSelectElement;
 const csvDelimiterSelect = document.getElementById('csv-delimiter') as HTMLSelectElement;
+const waypointMaxDistanceInput = document.getElementById('waypoint-max-distance') as HTMLInputElement;
+
+// GPX-only options elements
+const gpxOnlyOptions = document.querySelectorAll<HTMLElement>('.gpx-only-option');
 
 // State
 let gpxFile: File | null = null;
 let csvFile: File | null = null;
 let gpxSplitResults: SplitResult[] = [];
 let csvProcessResults: ProcessResult | null = null;
+
+/**
+ * Show or hide GPX-only options based on the selected file type
+ */
+function updateGpxOnlyOptionsVisibility(file: File | null): void {
+  const isGpxFile = file?.name.toLowerCase().endsWith('.gpx') ?? false;
+  gpxOnlyOptions.forEach(el => {
+    el.classList.toggle('visible', isGpxFile);
+  });
+}
 
 // Tab switching
 tabs.forEach(tab => {
@@ -200,6 +215,7 @@ gpxDownloadAll.addEventListener('click', async () => {
 // CSV handling
 setupUploadArea(csvUploadArea, csvFileInput, csvFileInfo, (file) => {
   csvFile = file;
+  updateGpxOnlyOptionsVisibility(file);
   if (file) {
     showFileInfo(csvUploadArea, csvFileInfo, file);
     csvProcessBtn.disabled = false;
@@ -227,13 +243,32 @@ csvProcessBtn.addEventListener('click', async () => {
     const elevationUnit = elevationUnitSelect.value as ElevationUnit;
     const csvDelimiter = csvDelimiterSelect.value as CsvDelimiter;
 
-    csvProcessResults = processTravelPlan(content, {
-      resupplyKeywords: keywords,
-      includeEndAsResupply: includeEndCheckbox.checked,
-      distanceUnit,
-      elevationUnit,
-      csvDelimiter,
-    });
+    // Detect file type by extension
+    const isGpxFile = csvFile.name.toLowerCase().endsWith('.gpx');
+
+    if (isGpxFile) {
+      // Process as GPX file
+      const waypointMaxDistance = parseInt(waypointMaxDistanceInput.value) || 200;
+
+      csvProcessResults = processGpxTravelPlan(content, {
+        resupplyKeywords: keywords,
+        includeStartAsResupply: includeStartCheckbox.checked,
+        includeEndAsResupply: includeEndCheckbox.checked,
+        distanceUnit,
+        elevationUnit,
+        csvDelimiter,
+        waypointMaxDistance,
+      });
+    } else {
+      // Process as CSV file
+      csvProcessResults = processTravelPlan(content, {
+        resupplyKeywords: keywords,
+        includeEndAsResupply: includeEndCheckbox.checked,
+        distanceUnit,
+        elevationUnit,
+        csvDelimiter,
+      });
+    }
 
     // Show results
     csvResults.removeAttribute('hidden');
@@ -258,7 +293,7 @@ csvProcessBtn.addEventListener('click', async () => {
       <p><strong>Total descent:</strong> ${Math.round(displayDescent).toLocaleString()} ${eleLabel}</p>
     `;
 
-    const baseName = csvFile.name.replace('.csv', '');
+    const baseName = csvFile.name.replace(/\.(csv|gpx)$/i, '');
 
     csvFileList.innerHTML = `
       <div class="file-item">
@@ -291,7 +326,7 @@ csvProcessBtn.addEventListener('click', async () => {
     });
 
   } catch (error) {
-    alert(`Error processing CSV: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    alert(`Error processing file: ${error instanceof Error ? error.message : 'Unknown error'}`);
   } finally {
     csvProcessBtn.disabled = false;
     csvProcessBtn.textContent = 'Process Travel Plan';
@@ -301,7 +336,7 @@ csvProcessBtn.addEventListener('click', async () => {
 csvDownloadAll.addEventListener('click', async () => {
   if (!csvProcessResults || !csvFile) return;
 
-  const baseName = csvFile.name.replace('.csv', '');
+  const baseName = csvFile.name.replace(/\.(csv|gpx)$/i, '');
   const zip = new JSZip();
   zip.file(`${baseName}_processed.csv`, csvProcessResults.processedPlan);
   zip.file(`${baseName}_resupply.csv`, csvProcessResults.resupplyPoints);
@@ -319,10 +354,12 @@ function loadPreferences(): void {
       if (parsed.gpx?.maxPoints) maxPointsInput.value = parsed.gpx.maxPoints;
       if (parsed.gpx?.waypointDistance) waypointDistanceInput.value = parsed.gpx.waypointDistance;
       if (parsed.csv?.resupplyKeywords) resupplyKeywordsInput.value = parsed.csv.resupplyKeywords.join(', ');
+      if (parsed.csv?.includeStartAsResupply !== undefined) includeStartCheckbox.checked = parsed.csv.includeStartAsResupply;
       if (parsed.csv?.includeEndAsResupply !== undefined) includeEndCheckbox.checked = parsed.csv.includeEndAsResupply;
       if (parsed.csv?.distanceUnit) distanceUnitSelect.value = parsed.csv.distanceUnit;
       if (parsed.csv?.elevationUnit) elevationUnitSelect.value = parsed.csv.elevationUnit;
       if (parsed.csv?.csvDelimiter) csvDelimiterSelect.value = parsed.csv.csvDelimiter;
+      if (parsed.csv?.waypointMaxDistance) waypointMaxDistanceInput.value = parsed.csv.waypointMaxDistance;
     } catch {
       // Ignore invalid stored prefs
     }
@@ -337,18 +374,20 @@ function savePreferences(): void {
     },
     csv: {
       resupplyKeywords: resupplyKeywordsInput.value.split(',').map(k => k.trim()).filter(k => k),
+      includeStartAsResupply: includeStartCheckbox.checked,
       includeEndAsResupply: includeEndCheckbox.checked,
       distanceUnit: distanceUnitSelect.value,
       elevationUnit: elevationUnitSelect.value,
       csvDelimiter: csvDelimiterSelect.value,
+      waypointMaxDistance: parseInt(waypointMaxDistanceInput.value),
     },
   };
   localStorage.setItem('gpx-tools-prefs', JSON.stringify(prefs));
 }
 
 // Save preferences on change
-[maxPointsInput, waypointDistanceInput, resupplyKeywordsInput, includeEndCheckbox,
- distanceUnitSelect, elevationUnitSelect, csvDelimiterSelect].forEach(input => {
+[maxPointsInput, waypointDistanceInput, resupplyKeywordsInput, includeStartCheckbox, includeEndCheckbox,
+ distanceUnitSelect, elevationUnitSelect, csvDelimiterSelect, waypointMaxDistanceInput].forEach(input => {
   input.addEventListener('change', savePreferences);
 });
 

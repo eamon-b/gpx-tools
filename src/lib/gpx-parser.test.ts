@@ -170,7 +170,94 @@ describe('parseGpx', () => {
     const result = parseGpx(gpx);
 
     expect(result.tracks).toHaveLength(0);
+    expect(result.routes).toHaveLength(0);
     expect(result.waypoints).toHaveLength(0);
+  });
+
+  it('should parse a route element', () => {
+    const gpx = `<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1">
+  <rte>
+    <name>Test Route</name>
+    <rtept lat="-37.8136" lon="144.9631">
+      <ele>50</ele>
+    </rtept>
+    <rtept lat="-37.8200" lon="144.9700">
+      <ele>60</ele>
+    </rtept>
+  </rte>
+</gpx>`;
+
+    const result = parseGpx(gpx);
+
+    expect(result.routes).toHaveLength(1);
+    expect(result.routes[0].name).toBe('Test Route');
+    expect(result.routes[0].points).toHaveLength(2);
+
+    const point1 = result.routes[0].points[0];
+    expect(point1.lat).toBe(-37.8136);
+    expect(point1.lon).toBe(144.9631);
+    expect(point1.ele).toBe(50);
+
+    const point2 = result.routes[0].points[1];
+    expect(point2.lat).toBe(-37.82);
+    expect(point2.ele).toBe(60);
+  });
+
+  it('should parse multiple routes', () => {
+    const gpx = `<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1">
+  <rte>
+    <name>Route 1</name>
+    <rtept lat="-37.8136" lon="144.9631"><ele>0</ele></rtept>
+  </rte>
+  <rte>
+    <name>Route 2</name>
+    <rtept lat="-33.8688" lon="151.2093"><ele>0</ele></rtept>
+  </rte>
+</gpx>`;
+
+    const result = parseGpx(gpx);
+
+    expect(result.routes).toHaveLength(2);
+    expect(result.routes[0].name).toBe('Route 1');
+    expect(result.routes[1].name).toBe('Route 2');
+  });
+
+  it('should parse GPX with both tracks and routes', () => {
+    const gpx = `<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1">
+  <trk>
+    <name>Track 1</name>
+    <trkseg>
+      <trkpt lat="-37.8136" lon="144.9631"><ele>50</ele></trkpt>
+    </trkseg>
+  </trk>
+  <rte>
+    <name>Route 1</name>
+    <rtept lat="-33.8688" lon="151.2093"><ele>10</ele></rtept>
+  </rte>
+</gpx>`;
+
+    const result = parseGpx(gpx);
+
+    expect(result.tracks).toHaveLength(1);
+    expect(result.routes).toHaveLength(1);
+    expect(result.tracks[0].name).toBe('Track 1');
+    expect(result.routes[0].name).toBe('Route 1');
+  });
+
+  it('should handle route with no name', () => {
+    const gpx = `<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1">
+  <rte>
+    <rtept lat="-37.8136" lon="144.9631"><ele>0</ele></rtept>
+  </rte>
+</gpx>`;
+
+    const result = parseGpx(gpx);
+
+    expect(result.routes[0].name).toBe('');
   });
 });
 

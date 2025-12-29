@@ -56,14 +56,14 @@
       </div>
     </section>
 
-    <!-- CSV Processor Panel -->
+    <!-- Travel Plan Processor Panel -->
     <section id="csv-panel" class="panel">
       <div class="upload-area" id="csv-upload-area">
         <div class="upload-content">
           <span class="upload-icon">📂</span>
-          <p>Drag & drop a Caltopo CSV here</p>
+          <p>Drag & drop a Caltopo CSV or GPX file here</p>
           <p class="upload-hint">or click to select</p>
-          <input type="file" id="csv-file-input" accept=".csv" hidden>
+          <input type="file" id="csv-file-input" accept=".csv,.gpx" hidden>
         </div>
         <div class="file-info" id="csv-file-info" hidden>
           <span class="file-name"></span>
@@ -74,16 +74,26 @@
 
       <div class="options">
         <h3>Options</h3>
+        <div class="option-row gpx-only-option">
+          <label for="waypoint-max-distance">Waypoint max distance from track (m):</label>
+          <input type="number" id="waypoint-max-distance" value="200" min="10" max="5000" step="10">
+        </div>
         <div class="option-row">
           <label for="resupply-keywords">Resupply keywords:</label>
           <input type="text" id="resupply-keywords"
             value="grocer, market, foodland, iga, wool, coles, general, servo"
             placeholder="Comma-separated keywords">
         </div>
+        <div class="option-row checkbox-row gpx-only-option">
+          <label>
+            <input type="checkbox" id="include-start">
+            Include first waypoint as resupply point
+          </label>
+        </div>
         <div class="option-row checkbox-row">
           <label>
             <input type="checkbox" id="include-end" checked>
-            Include "End" as resupply point
+            Include last waypoint as resupply point
           </label>
         </div>
         <div class="option-row">
