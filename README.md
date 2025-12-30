@@ -145,11 +145,14 @@ vercel --prod
 
 1. **Create project**: Run `vercel` and follow prompts
 2. **Set up Vercel KV**: Dashboard → Storage → Create → KV → Connect to project
-3. **Add environment variables** (optional):
+3. **Add environment variables**:
    ```bash
-   vercel env add RATE_LIMIT_PER_MINUTE    # Default: 10
-   vercel env add CACHE_TTL_SECONDS        # Default: 604800 (7 days)
+   vercel env add ALLOWED_ORIGINS          # Required: comma-separated allowed origins
+   vercel env add RATE_LIMIT_PER_MINUTE    # Optional, default: 10
+   vercel env add CACHE_TTL_SECONDS        # Optional, default: 604800 (7 days)
    ```
+
+   > **Security Note:** Always configure `ALLOWED_ORIGINS` in production (e.g., `https://yourdomain.com,https://www.yourdomain.com`). Without this, cross-origin API requests will be denied.
 4. **Enable auto-deploy**: Dashboard → Settings → Git → Connect repository
 
 #### Verify Deployment

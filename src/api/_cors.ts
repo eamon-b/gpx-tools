@@ -44,11 +44,12 @@ export function getCorsHeaders(req: Request): Record<string, string> {
     );
   }
 
-  // Check if origin is allowed
-  const isAllowed = allowedOrigins.length === 0 || allowedOrigins.includes(origin);
+  // Check if origin is allowed (must be explicitly in the list)
+  const isAllowed = allowedOrigins.length > 0 && allowedOrigins.includes(origin);
 
-  // If no origins configured and in production, allow same-origin only
-  const allowOrigin = isAllowed ? origin : (allowedOrigins[0] || '*');
+  // If origin not allowed, deny access (empty string = no CORS header sent)
+  // This prevents unauthorized cross-origin requests in production
+  const allowOrigin = isAllowed ? origin : '';
 
   return {
     'Access-Control-Allow-Origin': allowOrigin,

@@ -12,6 +12,12 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { haversineDistance as haversineDistanceMeters } from '../src/lib/distance.js';
+
+/** Calculate haversine distance in km */
+function haversineDistanceKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  return haversineDistanceMeters(lat1, lon1, lat2, lon2) / 1000;
+}
 
 interface TrailPoint {
   lat: number;
@@ -55,7 +61,12 @@ interface Bounds {
   east: number;
 }
 
-const SCRIPTS_DIR = path.dirname(new URL(import.meta.url).pathname);
+// Handle both Windows and Unix paths from import.meta.url
+const SCRIPTS_DIR = path.dirname(
+  process.platform === 'win32'
+    ? new URL(import.meta.url).pathname.slice(1).replace(/\//g, '\\')
+    : new URL(import.meta.url).pathname
+);
 const PROJECT_ROOT = path.resolve(SCRIPTS_DIR, '..');
 const GENERATED_DIR = path.join(PROJECT_ROOT, 'data/generated');
 
@@ -205,16 +216,6 @@ function categorizePOI(tags: Record<string, string>): string {
   return 'other';
 }
 
-function haversineDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {
-  const R = 6371; // km
-  const dLat = (lat2 - lat1) * Math.PI / 180;
-  const dLon = (lon2 - lon1) * Math.PI / 180;
-  const a = Math.sin(dLat / 2) ** 2 +
-    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
-    Math.sin(dLon / 2) ** 2;
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-}
-
 function findNearestTrailPoint(
   poi: { lat: number; lon: number },
   points: TrailPoint[]
@@ -223,7 +224,7 @@ function findNearestTrailPoint(
   let distanceAlongTrail = 0;
 
   for (const point of points) {
-    const dist = haversineDistance(poi.lat, poi.lon, point.lat, point.lon);
+    const dist = haversineDistanceKm(poi.lat, poi.lon, point.lat, point.lon);
     if (dist < minDistance) {
       minDistance = dist;
       distanceAlongTrail = point.dist;

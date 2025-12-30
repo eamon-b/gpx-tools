@@ -41,7 +41,12 @@ interface ElevationResult {
   elevation: number;
 }
 
-const SCRIPTS_DIR = path.dirname(new URL(import.meta.url).pathname);
+// Handle both Windows and Unix paths from import.meta.url
+const SCRIPTS_DIR = path.dirname(
+  process.platform === 'win32'
+    ? new URL(import.meta.url).pathname.slice(1).replace(/\//g, '\\')
+    : new URL(import.meta.url).pathname
+);
 const PROJECT_ROOT = path.resolve(SCRIPTS_DIR, '..');
 const GENERATED_DIR = path.join(PROJECT_ROOT, 'data/generated');
 

@@ -2,6 +2,12 @@ import * as fs from 'fs';
 import * as path from 'path';
 import Papa from 'papaparse';
 import { JSDOM } from 'jsdom';
+import { haversineDistance as haversineDistanceMeters } from '../src/lib/distance.js';
+
+/** Calculate haversine distance in km */
+function haversineDistanceKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  return haversineDistanceMeters(lat1, lon1, lat2, lon2) / 1000;
+}
 
 interface TrailConfig {
   id: string;
@@ -35,7 +41,12 @@ interface ProcessedTrail {
   climate: Record<string, unknown> | null;
 }
 
-const SCRIPTS_DIR = path.dirname(new URL(import.meta.url).pathname);
+// Handle both Windows and Unix paths from import.meta.url
+const SCRIPTS_DIR = path.dirname(
+  process.platform === 'win32'
+    ? new URL(import.meta.url).pathname.slice(1).replace(/\//g, '\\')
+    : new URL(import.meta.url).pathname
+);
 const PROJECT_ROOT = path.resolve(SCRIPTS_DIR, '..');
 const DATA_DIR = path.join(PROJECT_ROOT, 'data/trails');
 const OUTPUT_DIR = path.join(PROJECT_ROOT, 'data/generated');
@@ -78,15 +89,6 @@ function parseGpxNode(xml: string): { points: GpxPoint[] } {
   return { points };
 }
 
-function haversine(lat1: number, lon1: number, lat2: number, lon2: number): number {
-  const R = 6371; // km
-  const dLat = (lat2 - lat1) * Math.PI / 180;
-  const dLon = (lon2 - lon1) * Math.PI / 180;
-  const a = Math.sin(dLat / 2) ** 2 +
-    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
-    Math.sin(dLon / 2) ** 2;
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-}
 
 function validateDataDirectory(): void {
   if (!fs.existsSync(DATA_DIR)) {
@@ -168,7 +170,7 @@ async function processTrail(trailDir: string): Promise<ProcessedTrail> {
   const points = gpxData.points.map((p, i, arr) => {
     if (i > 0) {
       const prev = arr[i - 1];
-      const dist = haversine(prev.lat, prev.lon, p.lat, p.lon);
+      const dist = haversineDistanceKm(prev.lat, prev.lon, p.lat, p.lon);
       totalDistance += dist;
 
       const elevDiff = (p.ele || 0) - (prev.ele || 0);

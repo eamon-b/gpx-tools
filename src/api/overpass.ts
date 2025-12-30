@@ -1,6 +1,7 @@
 import { kv } from '@vercel/kv';
 import { createHash } from 'crypto';
 import { getCorsHeaders } from './_cors';
+import { logError } from './_logger';
 
 interface OverpassRequest {
   bounds: {
@@ -186,11 +187,12 @@ export default async function handler(req: Request): Promise<Response> {
       method: 'POST',
       body: `data=${encodeURIComponent(query)}`,
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      signal: AbortSignal.timeout(20000), // 20 second timeout (Overpass can be slow)
     });
 
     if (!overpassResponse.ok) {
       const errorText = await overpassResponse.text();
-      console.error('Overpass error:', errorText);
+      logError('overpass:api', errorText, { status: overpassResponse.status });
       return new Response(JSON.stringify({
         error: 'Overpass API error',
         status: overpassResponse.status,
@@ -215,7 +217,7 @@ export default async function handler(req: Request): Promise<Response> {
     });
 
   } catch (error) {
-    console.error('Handler error:', error);
+    logError('overpass:handler', error);
     return new Response(JSON.stringify({ error: 'Internal server error' }), {
       status: 500,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },

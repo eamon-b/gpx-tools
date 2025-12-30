@@ -30,6 +30,8 @@ export { parseGpx, generateGpx } from './gpx-parser';
 
 // Distance Utilities
 export {
+  EARTH_RADIUS_METERS,
+  haversineDistance,
   haversineDistance3D,
   waypointToPointDistance,
   isWaypointNearPoints,

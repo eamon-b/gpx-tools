@@ -1,5 +1,6 @@
 import { kv } from '@vercel/kv';
 import { getCorsHeaders } from './_cors';
+import { logError, logWarn } from './_logger';
 
 interface ElevationRequest {
   locations: { lat: number; lon: number }[];
@@ -95,11 +96,14 @@ async function setCachedElevation(lat: number, lon: number, elevation: number): 
   await kv.set(key, elevation, { ex: CACHE_TTL });
 }
 
+const FETCH_TIMEOUT_MS = 15000; // 15 second timeout for external API
+
 async function fetchElevations(locations: { lat: number; lon: number }[]): Promise<ElevationResult[]> {
   const response = await fetch(OPEN_ELEVATION_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ locations }),
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
   });
 
   if (!response.ok) {
@@ -143,6 +147,22 @@ export default async function handler(req: Request): Promise<Response> {
         status: 400,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });
+    }
+
+    // Validate coordinate bounds
+    for (const loc of body.locations) {
+      if (
+        typeof loc.lat !== 'number' || typeof loc.lon !== 'number' ||
+        loc.lat < -90 || loc.lat > 90 ||
+        loc.lon < -180 || loc.lon > 180
+      ) {
+        return new Response(JSON.stringify({
+          error: 'Invalid coordinates. Latitude must be -90 to 90, longitude -180 to 180.',
+        }), {
+          status: 400,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
     }
 
     // Check circuit breaker before making external requests
@@ -199,12 +219,12 @@ export default async function handler(req: Request): Promise<Response> {
           }
         }
       } catch (error) {
-        console.error('Elevation fetch error:', error);
+        logError('elevation:fetch', error, { batchSize: batch.length });
 
         // Record failure for circuit breaker
         const circuitOpened = await recordFailure();
         if (circuitOpened) {
-          console.warn('Circuit breaker opened for elevation API');
+          logWarn('elevation:circuit', 'Circuit breaker opened for elevation API');
         }
 
         // Fill failed points with null
@@ -228,7 +248,7 @@ export default async function handler(req: Request): Promise<Response> {
     });
 
   } catch (error) {
-    console.error('Handler error:', error);
+    logError('elevation:handler', error);
     return new Response(JSON.stringify({ error: 'Internal server error' }), {
       status: 500,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
