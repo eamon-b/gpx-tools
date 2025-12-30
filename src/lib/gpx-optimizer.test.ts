@@ -113,7 +113,7 @@ describe('removeElevationSpikes', () => {
     expect(result[2].ele).toBe(60);
   });
 
-  it('should interpolate elevation spikes', () => {
+  it('should interpolate elevation spikes linearly', () => {
     const points: GpxPoint[] = [
       { lat: -37.8136, lon: 144.9631, ele: 100, time: null },
       { lat: -37.8150, lon: 144.9650, ele: 200, time: null }, // spike (+100m)
@@ -123,11 +123,12 @@ describe('removeElevationSpikes', () => {
     const result = removeElevationSpikes(points, 50);
 
     expect(result[0].ele).toBe(100);
-    expect(result[1].ele).toBe(100); // interpolated to previous
+    // Spike should be interpolated halfway between 100 and 105
+    expect(result[1].ele).toBeCloseTo(102.5, 1);
     expect(result[2].ele).toBe(105);
   });
 
-  it('should handle multiple consecutive spikes', () => {
+  it('should handle multiple consecutive spikes with linear interpolation', () => {
     const points: GpxPoint[] = [
       { lat: -37.8100, lon: 144.9600, ele: 100, time: null },
       { lat: -37.8120, lon: 144.9620, ele: 200, time: null }, // spike
@@ -138,8 +139,9 @@ describe('removeElevationSpikes', () => {
     const result = removeElevationSpikes(points, 50);
 
     expect(result[0].ele).toBe(100);
-    expect(result[1].ele).toBe(100);
-    expect(result[2].ele).toBe(100);
+    // Middle spikes should be interpolated between 100 and 105
+    expect(result[1].ele).toBeCloseTo(101.67, 1); // ~1/3 of the way
+    expect(result[2].ele).toBeCloseTo(103.33, 1); // ~2/3 of the way
     expect(result[3].ele).toBe(105);
   });
 });
@@ -534,11 +536,16 @@ describe('optimizeGpx', () => {
   </trk>
 </gpx>`;
 
-    const result = optimizeGpx(gpx, 'zigzag.gpx', { simplificationTolerance: 100 });
+    // Use high tolerance and low warning threshold to trigger warning
+    const result = optimizeGpx(gpx, 'zigzag.gpx', {
+      simplificationTolerance: 100,
+      maxDistanceChangeRatio: 0.01  // Very strict - 1% threshold
+    });
 
-    // With high tolerance and zigzag pattern, expect distance to be similar or less
-    // Allow small floating point tolerance
-    expect(result.optimized.distance).toBeLessThanOrEqual(result.original.distance * 1.001);
+    // Verify that a distance warning was generated
+    const hasDistanceWarning = result.warnings.some(w => w.includes('Distance changed'));
+    expect(hasDistanceWarning).toBe(true);
+    expect(result.passed).toBe(false);
   });
 
   it('should handle multi-segment tracks', () => {
@@ -577,6 +584,93 @@ describe('optimizeGpx', () => {
     expect(result.original.pointCount).toBe(0);
     expect(result.optimized.pointCount).toBe(0);
   });
+
+  it('should preserve sea-level elevations (ele === 0)', () => {
+    const seaLevelGpx = `<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1">
+  <trk>
+    <name>Sea Level Track</name>
+    <trkseg>
+      <trkpt lat="-37.8000" lon="144.9000"><ele>0</ele></trkpt>
+      <trkpt lat="-37.8010" lon="144.9010"><ele>0</ele></trkpt>
+      <trkpt lat="-37.8020" lon="144.9020"><ele>0</ele></trkpt>
+    </trkseg>
+  </trk>
+</gpx>`;
+
+    const result = optimizeGpx(seaLevelGpx, 'sealevel.gpx');
+
+    // Verify elevation is included in output
+    expect(result.content).toContain('<ele>0</ele>');
+    expect(result.optimized.pointCount).toBeGreaterThanOrEqual(2);
+  });
+
+  it('should handle negative elevations (below sea level)', () => {
+    const belowSeaGpx = `<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1">
+  <trk>
+    <name>Below Sea Level</name>
+    <trkseg>
+      <trkpt lat="31.5" lon="35.4"><ele>-400</ele></trkpt>
+      <trkpt lat="31.51" lon="35.41"><ele>-405</ele></trkpt>
+      <trkpt lat="31.52" lon="35.42"><ele>-410</ele></trkpt>
+    </trkseg>
+  </trk>
+</gpx>`;
+
+    const result = optimizeGpx(belowSeaGpx, 'deadsea.gpx');
+
+    // Verify negative elevations are preserved
+    expect(result.content).toContain('<ele>-4');
+    expect(result.optimized.elevationLoss).toBeGreaterThan(0);
+  });
+
+  it('should throw error on empty input', () => {
+    expect(() => optimizeGpx('', 'empty.gpx')).toThrow('GPX content cannot be empty');
+    expect(() => optimizeGpx('   ', 'whitespace.gpx')).toThrow('GPX content cannot be empty');
+  });
+
+  it('should throw error when file size exceeds limit', () => {
+    const smallGpx = `<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1">
+  <trk>
+    <name>Test</name>
+    <trkseg>
+      <trkpt lat="-37.8" lon="144.9"><ele>100</ele></trkpt>
+      <trkpt lat="-37.81" lon="144.91"><ele>105</ele></trkpt>
+    </trkseg>
+  </trk>
+</gpx>`;
+
+    expect(() =>
+      optimizeGpx(smallGpx, 'test.gpx', { maxFileSize: 100 })
+    ).toThrow('exceeds maximum allowed size');
+  });
+
+  it('should throw error when point count exceeds limit', () => {
+    let gpx = `<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1">
+  <trk>
+    <name>Large Track</name>
+    <trkseg>`;
+
+    // Generate 100 points
+    for (let i = 0; i < 100; i++) {
+      gpx += `
+      <trkpt lat="${-37.8 + i * 0.001}" lon="${144.9 + i * 0.001}">
+        <ele>100</ele>
+      </trkpt>`;
+    }
+
+    gpx += `
+    </trkseg>
+  </trk>
+</gpx>`;
+
+    expect(() =>
+      optimizeGpx(gpx, 'large.gpx', { maxPointCount: 50 })
+    ).toThrow('Point count');
+  });
 });
 
 describe('GPX_OPTIMIZER_DEFAULTS', () => {
@@ -590,5 +684,10 @@ describe('GPX_OPTIMIZER_DEFAULTS', () => {
     expect(GPX_OPTIMIZER_DEFAULTS.stripExtensions).toBe(true);
     expect(GPX_OPTIMIZER_DEFAULTS.preserveTimestamps).toBe(true);
     expect(GPX_OPTIMIZER_DEFAULTS.coordinatePrecision).toBe(6);
+    expect(GPX_OPTIMIZER_DEFAULTS.maxDistanceChangeRatio).toBe(0.05);
+    expect(GPX_OPTIMIZER_DEFAULTS.maxElevationChangeRatio).toBe(0.15);
+    expect(GPX_OPTIMIZER_DEFAULTS.maxFileSizeBytes).toBe(20 * 1024);
+    expect(GPX_OPTIMIZER_DEFAULTS.maxPointCount).toBe(100000);
+    expect(GPX_OPTIMIZER_DEFAULTS.maxFileSize).toBe(50 * 1024 * 1024);
   });
 });
