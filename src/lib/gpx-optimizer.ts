@@ -10,6 +10,9 @@ import type {
 import { parseGpx } from './gpx-parser';
 import { haversineDistance3D } from './distance';
 
+// Constants
+const EARTH_RADIUS_METERS = 6371000;
+
 // Default optimization options
 export const GPX_OPTIMIZER_DEFAULTS: OptimizationOptions = {
   simplificationTolerance: 10,      // 10 meters - good balance for web display
@@ -20,17 +23,28 @@ export const GPX_OPTIMIZER_DEFAULTS: OptimizationOptions = {
   truncateEnd: 0,                   // disabled by default
   stripExtensions: true,
   preserveTimestamps: true,
-  coordinatePrecision: 6            // ~0.11 meter precision
-};
-
-// Validation thresholds
-const DISTANCE_CHANGE_WARNING_THRESHOLD = 0.05;  // 5%
-const ELEVATION_CHANGE_WARNING_THRESHOLD = 0.15; // 15%
-const FILE_SIZE_WARNING_THRESHOLD = 20 * 1024;   // 20KB
+  coordinatePrecision: 6,           // ~0.11 meter precision
+  maxDistanceChangeRatio: 0.05,     // 5% - warn if distance changes by more than this
+  maxElevationChangeRatio: 0.15,    // 15% - warn if elevation gain changes by more than this
+  maxFileSizeBytes: 20 * 1024,      // 20KB - warn if optimized file exceeds this size
+  maxPointCount: 100000,            // 100k points maximum (0 = unlimited)
+  maxFileSize: 50 * 1024 * 1024     // 50MB maximum input file size (0 = unlimited)
+}
 
 /**
  * Calculate perpendicular distance from a point to a line segment
  * Used by Douglas-Peucker algorithm
+ *
+ * Note: Uses equirectangular approximation which works well for short distances
+ * but may be inaccurate for:
+ * - Points near poles (latitude > 80°)
+ * - Very long segments (>100km)
+ * - Tracks crossing the 180° meridian
+ *
+ * @param point - The point to measure distance from
+ * @param lineStart - Start of the line segment
+ * @param lineEnd - End of the line segment
+ * @returns Perpendicular distance in meters
  */
 function perpendicularDistance(
   point: GpxPoint,
@@ -49,16 +63,13 @@ function perpendicularDistance(
   const lon2 = toRadians(lineEnd.lon);
   const lonP = toRadians(point.lon);
 
-  // Earth radius in meters
-  const R = 6371000;
-
   // Project to flat surface (equirectangular approximation)
-  const x1 = lon1 * Math.cos((lat1 + lat2) / 2) * R;
-  const y1 = lat1 * R;
-  const x2 = lon2 * Math.cos((lat1 + lat2) / 2) * R;
-  const y2 = lat2 * R;
-  const xP = lonP * Math.cos((lat1 + lat2) / 2) * R;
-  const yP = latP * R;
+  const x1 = lon1 * Math.cos((lat1 + lat2) / 2) * EARTH_RADIUS_METERS;
+  const y1 = lat1 * EARTH_RADIUS_METERS;
+  const x2 = lon2 * Math.cos((lat1 + lat2) / 2) * EARTH_RADIUS_METERS;
+  const y2 = lat2 * EARTH_RADIUS_METERS;
+  const xP = lonP * Math.cos((lat1 + lat2) / 2) * EARTH_RADIUS_METERS;
+  const yP = latP * EARTH_RADIUS_METERS;
 
   // Line length squared
   const lineLengthSquared = (x2 - x1) ** 2 + (y2 - y1) ** 2;
@@ -82,6 +93,10 @@ function perpendicularDistance(
 /**
  * Douglas-Peucker line simplification algorithm
  * Reduces number of points while preserving shape within tolerance
+ *
+ * @param points - Array of GPS points to simplify
+ * @param tolerance - Maximum perpendicular distance in meters for point removal
+ * @returns Simplified array of points
  */
 export function douglasPeucker(points: GpxPoint[], tolerance: number): GpxPoint[] {
   if (points.length <= 2) {
@@ -118,7 +133,11 @@ export function douglasPeucker(points: GpxPoint[], tolerance: number): GpxPoint[
 
 /**
  * Remove elevation spikes that exceed physical possibility
- * Returns points with interpolated elevations where spikes detected
+ * Uses linear interpolation between valid points when spikes are detected
+ *
+ * @param points - Array of GPS points with elevation data
+ * @param spikeThreshold - Maximum valid elevation change in meters between consecutive points
+ * @returns Array of points with spikes interpolated
  */
 export function removeElevationSpikes(
   points: GpxPoint[],
@@ -126,22 +145,55 @@ export function removeElevationSpikes(
 ): GpxPoint[] {
   if (points.length < 2) return points;
 
-  const result: GpxPoint[] = [{ ...points[0] }];
-
+  // First pass: identify spike points
+  const isSpike: boolean[] = new Array(points.length).fill(false);
   for (let i = 1; i < points.length; i++) {
-    const prev = result[result.length - 1];
-    const current = points[i];
-
-    const elevationChange = Math.abs(current.ele - prev.ele);
-
+    const elevationChange = Math.abs(points[i].ele - points[i - 1].ele);
     if (elevationChange > spikeThreshold) {
-      // Spike detected - interpolate elevation
-      result.push({
-        ...current,
-        ele: prev.ele // Use previous elevation
-      });
+      isSpike[i] = true;
+    }
+  }
+
+  // Second pass: interpolate spikes
+  const result: GpxPoint[] = [];
+  for (let i = 0; i < points.length; i++) {
+    if (!isSpike[i]) {
+      result.push({ ...points[i] });
     } else {
-      result.push({ ...current });
+      // Find previous valid point
+      let prevIdx = i - 1;
+      while (prevIdx >= 0 && isSpike[prevIdx]) {
+        prevIdx--;
+      }
+
+      // Find next valid point
+      let nextIdx = i + 1;
+      while (nextIdx < points.length && isSpike[nextIdx]) {
+        nextIdx++;
+      }
+
+      let interpolatedEle: number;
+      if (prevIdx >= 0 && nextIdx < points.length) {
+        // Interpolate between previous and next valid points
+        const prevEle = points[prevIdx].ele;
+        const nextEle = points[nextIdx].ele;
+        const weight = (i - prevIdx) / (nextIdx - prevIdx);
+        interpolatedEle = prevEle + weight * (nextEle - prevEle);
+      } else if (prevIdx >= 0) {
+        // No valid point ahead, use previous
+        interpolatedEle = points[prevIdx].ele;
+      } else if (nextIdx < points.length) {
+        // No valid point before, use next
+        interpolatedEle = points[nextIdx].ele;
+      } else {
+        // All points are spikes (shouldn't happen), keep original
+        interpolatedEle = points[i].ele;
+      }
+
+      result.push({
+        ...points[i],
+        ele: interpolatedEle
+      });
     }
   }
 
@@ -150,6 +202,10 @@ export function removeElevationSpikes(
 
 /**
  * Apply moving average smoothing to elevation data
+ *
+ * @param points - Array of GPS points with elevation data
+ * @param windowSize - Number of points to include in moving average window
+ * @returns Array of points with smoothed elevations
  */
 export function smoothElevation(
   points: GpxPoint[],
@@ -183,6 +239,9 @@ export function smoothElevation(
 
 /**
  * Calculate total distance of a track in meters
+ *
+ * @param points - Array of GPS points
+ * @returns Total distance in meters using 3D Haversine formula
  */
 export function calculateTrackDistance(points: GpxPoint[]): number {
   if (points.length < 2) return 0;
@@ -201,6 +260,10 @@ export function calculateTrackDistance(points: GpxPoint[]): number {
 /**
  * Calculate elevation gain and loss for a track
  * Uses threshold to filter out noise
+ *
+ * @param points - Array of GPS points with elevation data
+ * @param threshold - Minimum elevation change in meters to count (default: 3m)
+ * @returns Object containing total gain and loss in meters
  */
 export function calculateElevationStats(
   points: GpxPoint[],
@@ -228,6 +291,11 @@ export function calculateElevationStats(
 /**
  * Truncate track by distance from start and/or end
  * Returns truncated points array
+ *
+ * @param points - Array of GPS points
+ * @param truncateStartMeters - Distance in meters to remove from start (0 = disabled)
+ * @param truncateEndMeters - Distance in meters to remove from end (0 = disabled)
+ * @returns Truncated array preserving at least 2 points from the remaining segment
  */
 export function truncateTrack(
   points: GpxPoint[],
@@ -269,9 +337,17 @@ export function truncateTrack(
     }
   }
 
-  // Ensure we have at least 2 points
+  // Ensure we have at least 2 points from the remaining segment
   if (endIndex - startIndex < 1) {
-    return points.slice(0, 2);
+    // Truncation too aggressive - preserve what's left
+    if (startIndex < points.length - 1) {
+      // Keep from startIndex to end
+      endIndex = Math.min(startIndex + 1, points.length - 1);
+    } else {
+      // Start truncation consumed everything - keep last 2 points
+      startIndex = Math.max(0, points.length - 2);
+      endIndex = points.length - 1;
+    }
   }
 
   return points.slice(startIndex, endIndex + 1);
@@ -322,7 +398,8 @@ export function generateOptimizedGpx(
       for (const pt of segment.points) {
         xml += `      <trkpt lat="${pt.lat}" lon="${pt.lon}">
 `;
-        if (pt.ele !== 0) {
+        // Include elevation if it's defined (0 is valid for sea level)
+        if (pt.ele !== undefined && pt.ele !== null) {
           xml += `        <ele>${pt.ele}</ele>
 `;
         }
@@ -415,6 +492,12 @@ function processSegment(
 
 /**
  * Main optimization function - optimize a GPX file
+ *
+ * @param gpxContent - GPX file content as string
+ * @param filename - Original filename (used for generating output filename)
+ * @param options - Optimization options (merged with defaults)
+ * @returns Optimization result with statistics and warnings
+ * @throws Error if input validation fails
  */
 export function optimizeGpx(
   gpxContent: string,
@@ -424,12 +507,31 @@ export function optimizeGpx(
   const opts: OptimizationOptions = { ...GPX_OPTIMIZER_DEFAULTS, ...options };
   const warnings: string[] = [];
 
+  // Input validation
+  if (!gpxContent || gpxContent.trim().length === 0) {
+    throw new Error('GPX content cannot be empty');
+  }
+
+  const inputSizeBytes = new TextEncoder().encode(gpxContent).length;
+  if (opts.maxFileSize > 0 && inputSizeBytes > opts.maxFileSize) {
+    throw new Error(
+      `Input file size (${(inputSizeBytes / 1024 / 1024).toFixed(1)} MB) exceeds maximum allowed size (${(opts.maxFileSize / 1024 / 1024).toFixed(1)} MB)`
+    );
+  }
+
   // Parse GPX
   const gpxData = parseGpx(gpxContent);
 
   // Get original stats
   const originalPoints = getAllPoints(gpxData);
   const originalStats = calculateStats(originalPoints, gpxContent);
+
+  // Validate point count
+  if (opts.maxPointCount > 0 && originalStats.pointCount > opts.maxPointCount) {
+    throw new Error(
+      `Point count (${originalStats.pointCount.toLocaleString()}) exceeds maximum allowed (${opts.maxPointCount.toLocaleString()})`
+    );
+  }
 
   // Convert routes to tracks if present
   const allTracks: GpxTrack[] = [...gpxData.tracks];
@@ -461,20 +563,20 @@ export function optimizeGpx(
   // Validation checks
   if (originalStats.distance > 0) {
     const distanceChange = Math.abs(optimizedStats.distance - originalStats.distance) / originalStats.distance;
-    if (distanceChange > DISTANCE_CHANGE_WARNING_THRESHOLD) {
-      warnings.push(`Distance changed by ${(distanceChange * 100).toFixed(1)}% (threshold: ${DISTANCE_CHANGE_WARNING_THRESHOLD * 100}%)`);
+    if (distanceChange > opts.maxDistanceChangeRatio) {
+      warnings.push(`Distance changed by ${(distanceChange * 100).toFixed(1)}% (threshold: ${(opts.maxDistanceChangeRatio * 100).toFixed(1)}%)`);
     }
   }
 
   if (originalStats.elevationGain > 0) {
     const elevationChange = Math.abs(optimizedStats.elevationGain - originalStats.elevationGain) / originalStats.elevationGain;
-    if (elevationChange > ELEVATION_CHANGE_WARNING_THRESHOLD) {
-      warnings.push(`Elevation gain changed by ${(elevationChange * 100).toFixed(1)}% (threshold: ${ELEVATION_CHANGE_WARNING_THRESHOLD * 100}%)`);
+    if (elevationChange > opts.maxElevationChangeRatio) {
+      warnings.push(`Elevation gain changed by ${(elevationChange * 100).toFixed(1)}% (threshold: ${(opts.maxElevationChangeRatio * 100).toFixed(1)}%)`);
     }
   }
 
-  if (optimizedStats.fileSize > FILE_SIZE_WARNING_THRESHOLD) {
-    warnings.push(`File size (${(optimizedStats.fileSize / 1024).toFixed(1)} KB) exceeds target of ${FILE_SIZE_WARNING_THRESHOLD / 1024} KB`);
+  if (optimizedStats.fileSize > opts.maxFileSizeBytes) {
+    warnings.push(`File size (${(optimizedStats.fileSize / 1024).toFixed(1)} KB) exceeds target of ${(opts.maxFileSizeBytes / 1024).toFixed(1)} KB`);
   }
 
   if (optimizedStats.pointCount < 2) {
