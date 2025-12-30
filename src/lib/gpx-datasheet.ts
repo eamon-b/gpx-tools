@@ -190,11 +190,17 @@ function flattenSingleTrackPoints(track: { segments: { points: GpxPoint[] }[] })
 /**
  * Process a single track/route to generate waypoint data.
  * Internal helper function used by processGpxTravelPlan.
+ *
+ * This function:
+ * 1. Always adds a "Start" point at the beginning of the track
+ * 2. Always adds an "End" point at the end of the track
+ * 3. Calculates distances including from track start to first waypoint and last waypoint to track end
  */
 function processSingleTrack(
   trackPoints: GpxPoint[],
   waypoints: GpxWaypoint[],
-  opts: GpxProcessOptions
+  opts: GpxProcessOptions,
+  trackName?: string
 ): { processedRows: ProcessedRow[]; resupplyRows: ResupplyRow[] } | null {
   if (trackPoints.length === 0) {
     return null;
@@ -203,9 +209,7 @@ function processSingleTrack(
   // Find all waypoint visits along this track
   const visits = findWaypointVisits(waypoints, trackPoints, opts.waypointMaxDistance);
 
-  if (visits.length === 0) {
-    return null;
-  }
+  const lastTrackIndex = trackPoints.length - 1;
 
   // Build processed rows
   const processedRows: ProcessedRow[] = [];
@@ -214,6 +218,22 @@ function processSingleTrack(
   let runningDescent = 0;
   let prevTrackIndex = 0;
 
+  // Always add Start point
+  const startPoint = trackPoints[0];
+  const startName = trackName ? `Start: ${trackName}` : 'Start';
+  processedRows.push({
+    location: startName,
+    elevation: startPoint.ele,
+    ascent: 0,
+    descent: 0,
+    distance: 0,
+    totalDistance: 0,
+    totalAscent: 0,
+    totalDescent: 0,
+    notes: '',
+  });
+
+  // Process each waypoint visit
   for (let i = 0; i < visits.length; i++) {
     const visit = visits[i];
 
@@ -244,6 +264,26 @@ function processSingleTrack(
 
     prevTrackIndex = visit.trackIndex;
   }
+
+  // Always add End point - calculate remaining distance from last waypoint to track end
+  const endStats = calculateSegmentStats(trackPoints, prevTrackIndex, lastTrackIndex + 1);
+  runningDistance += endStats.distance;
+  runningAscent += endStats.ascent;
+  runningDescent += endStats.descent;
+
+  const endPoint = trackPoints[lastTrackIndex];
+  const endName = trackName ? `End: ${trackName}` : 'End';
+  processedRows.push({
+    location: endName,
+    elevation: endPoint.ele,
+    ascent: endStats.ascent,
+    descent: endStats.descent,
+    distance: endStats.distance,
+    totalDistance: Math.round(runningDistance * 1000) / 1000,
+    totalAscent: Math.round(runningAscent * 10) / 10,
+    totalDescent: Math.round(runningDescent * 10) / 10,
+    notes: '',
+  });
 
   // Create resupply points
   const resupplyRows: ResupplyRow[] = [];
@@ -354,7 +394,7 @@ export function processGpxTravelPlan(
   const trackResults: Array<{ name: string; processedRows: ProcessedRow[]; resupplyRows: ResupplyRow[] }> = [];
 
   for (const trackData of tracksToProcess) {
-    const result = processSingleTrack(trackData.points, gpxData.waypoints, opts);
+    const result = processSingleTrack(trackData.points, gpxData.waypoints, opts, trackData.name);
     if (result && result.processedRows.length > 0) {
       trackResults.push({
         name: trackData.name,
@@ -368,7 +408,7 @@ export function processGpxTravelPlan(
 
   if (trackResults.length === 0) {
     throw new Error(
-      `No waypoints found on any track/route. Ensure waypoints are within ${opts.waypointMaxDistance}m of the tracks.`
+      `No valid tracks/routes found in the GPX file.`
     );
   }
 
