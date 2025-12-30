@@ -145,3 +145,52 @@ export interface WaypointVisit {
   trackIndex: number;           // position along track where visit occurs
   distanceFromTrack: number;    // actual distance from track point to waypoint
 }
+
+// GPX Optimizer Types
+export interface OptimizationOptions {
+  // Simplification
+  simplificationTolerance: number;  // meters - Douglas-Peucker epsilon
+
+  // Elevation smoothing
+  elevationSmoothing: boolean;
+  elevationSmoothingWindow: number; // number of points for moving average
+  spikeThreshold: number;           // meters - max elevation change to consider valid
+
+  // Privacy
+  truncateStart: number;            // meters to remove from start (0 = disabled)
+  truncateEnd: number;              // meters to remove from end (0 = disabled)
+  stripExtensions: boolean;         // remove proprietary extensions
+
+  // Data retention
+  preserveTimestamps: boolean;      // keep <time> elements (default: true)
+  coordinatePrecision: number;      // decimal places (default: 6)
+}
+
+export interface OptimizationStats {
+  pointCount: number;
+  fileSize: number;               // bytes
+  distance: number;               // meters
+  elevationGain: number;          // meters
+  elevationLoss: number;          // meters
+}
+
+export interface OptimizationResult {
+  filename: string;
+  content: string;                  // optimized GPX XML
+
+  // Statistics
+  original: OptimizationStats;
+  optimized: OptimizationStats;
+
+  // Validation
+  warnings: string[];               // issues detected during processing
+  passed: boolean;                  // true if within acceptable tolerances
+}
+
+export interface BatchOptimizationStats {
+  filesProcessed: number;
+  totalOriginalSize: number;
+  totalOptimizedSize: number;
+  averageReduction: number;         // percentage
+  warnings: string[];
+}

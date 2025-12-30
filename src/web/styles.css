@@ -336,6 +336,75 @@ footer {
   display: block;
 }
 
+/* Optimizer-specific styles */
+.option-row input[type="range"] {
+  flex: 1;
+  max-width: 200px;
+}
+
+.option-row select {
+  width: 160px;
+  padding: 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 1rem;
+  background: var(--surface);
+}
+
+.tolerance-hints {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  margin-top: -0.5rem;
+  margin-bottom: 0.75rem;
+  padding: 0 0.25rem;
+}
+
+.options h3:not(:first-child) {
+  margin-top: 1.25rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+}
+
+.elevation-option.disabled {
+  opacity: 0.5;
+}
+
+.elevation-option.disabled input {
+  cursor: not-allowed;
+}
+
+.file-item-status {
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.125rem 0.5rem;
+  border-radius: 4px;
+  margin-top: 0.25rem;
+  display: inline-block;
+}
+
+.file-item-status.passed {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.file-item-status.warning {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.file-item-warnings {
+  display: block;
+  font-size: 0.75rem;
+  color: #92400e;
+  margin-top: 0.25rem;
+}
+
+.stats .warning {
+  color: #92400e;
+}
+
 @media (max-width: 480px) {
   .option-row {
     flex-direction: column;
@@ -345,5 +414,10 @@ footer {
 
   .option-row input[type="number"] {
     width: 100%;
+  }
+
+  .tolerance-hints {
+    flex-direction: column;
+    gap: 0.25rem;
   }
 }
