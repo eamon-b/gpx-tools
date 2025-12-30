@@ -16,6 +16,7 @@
     <nav class="tabs">
       <button class="tab active" data-tab="gpx">GPX Splitter</button>
       <button class="tab" data-tab="csv">Travel Plan Processor</button>
+      <button class="tab" data-tab="optimizer">GPX Optimizer</button>
     </nav>
 
     <!-- GPX Splitter Panel -->
@@ -127,6 +128,80 @@
         <div class="stats" id="csv-stats"></div>
         <div class="file-list" id="csv-file-list"></div>
         <button class="download-all-btn" id="csv-download-all">Download All as ZIP</button>
+      </div>
+    </section>
+
+    <!-- GPX Optimizer Panel -->
+    <section id="optimizer-panel" class="panel">
+      <div class="upload-area" id="optimizer-upload-area">
+        <div class="upload-content">
+          <span class="upload-icon">📂</span>
+          <p>Drag & drop GPX files here</p>
+          <p class="upload-hint">or click to select (multiple files supported)</p>
+          <input type="file" id="optimizer-file-input" accept=".gpx" multiple hidden>
+        </div>
+        <div class="file-info" id="optimizer-file-info" hidden>
+          <span class="file-name"></span>
+          <span class="file-size"></span>
+          <button class="clear-btn" title="Clear">✕</button>
+        </div>
+      </div>
+
+      <div class="options">
+        <h3>Simplification</h3>
+        <div class="option-row">
+          <label for="simplification-tolerance">Simplification tolerance (meters):</label>
+          <input type="range" id="simplification-tolerance" min="5" max="50" value="10">
+          <span id="simplification-tolerance-value">10m</span>
+        </div>
+        <div class="tolerance-hints">
+          <span>5m: High fidelity</span>
+          <span>10m: Balanced (default)</span>
+          <span>50m: Aggressive</span>
+        </div>
+
+        <h3>Elevation Smoothing</h3>
+        <div class="option-row checkbox-row">
+          <label>
+            <input type="checkbox" id="elevation-smoothing" checked>
+            Enable elevation smoothing
+          </label>
+        </div>
+        <div class="option-row elevation-option">
+          <label for="smoothing-window">Smoothing window (points):</label>
+          <input type="number" id="smoothing-window" value="7" min="3" max="15" step="2">
+        </div>
+        <div class="option-row elevation-option">
+          <label for="spike-threshold">Spike threshold (meters):</label>
+          <input type="number" id="spike-threshold" value="50" min="10" max="200" step="10">
+        </div>
+
+        <h3>Privacy</h3>
+        <div class="option-row">
+          <label for="truncate-start">Truncate from start (meters):</label>
+          <input type="number" id="truncate-start" value="0" min="0" max="5000" step="50">
+        </div>
+        <div class="option-row">
+          <label for="truncate-end">Truncate from end (meters):</label>
+          <input type="number" id="truncate-end" value="0" min="0" max="5000" step="50">
+        </div>
+
+        <h3>Data Retention</h3>
+        <div class="option-row checkbox-row">
+          <label>
+            <input type="checkbox" id="preserve-timestamps" checked>
+            Preserve timestamps
+          </label>
+        </div>
+      </div>
+
+      <button class="process-btn" id="optimizer-process-btn" disabled>Optimize GPX Files</button>
+
+      <div class="results" id="optimizer-results" hidden>
+        <h3>Results</h3>
+        <div class="stats" id="optimizer-stats"></div>
+        <div class="file-list" id="optimizer-file-list"></div>
+        <button class="download-all-btn" id="optimizer-download-all">Download All as ZIP</button>
       </div>
     </section>
 
