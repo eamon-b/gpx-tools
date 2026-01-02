@@ -47,6 +47,20 @@ export interface SplitResult {
   waypointCount: number;
 }
 
+// GPX Combiner Types
+export interface CombineOptions {
+  trackName: string;
+  removeDuplicateWaypoints: boolean;
+  mergeAllSegments: boolean;
+}
+
+export interface CombineResult {
+  content: string;
+  pointCount: number;
+  waypointCount: number;
+  fileCount: number;
+}
+
 // CSV Processor Types
 export type DistanceUnit = 'km' | 'mi';
 export type ElevationUnit = 'm' | 'ft';

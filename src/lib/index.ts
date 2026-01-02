@@ -8,6 +8,8 @@ export type {
   GpxData,
   SplitOptions,
   SplitResult,
+  CombineOptions,
+  CombineResult,
   ProcessOptions,
   ProcessResult,
   ProcessedRow,
@@ -32,6 +34,9 @@ export {
 
 // GPX Splitter
 export { splitGpx, GPX_SPLITTER_DEFAULTS } from './gpx-splitter';
+
+// GPX Combiner
+export { combineGpx, GPX_COMBINER_DEFAULTS } from './gpx-combiner';
 
 // CSV Processor
 export {
