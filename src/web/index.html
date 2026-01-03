@@ -15,6 +15,7 @@
 
     <nav class="tabs">
       <button class="tab active" data-tab="gpx">GPX Splitter</button>
+      <button class="tab" data-tab="combiner">GPX Combiner</button>
       <button class="tab" data-tab="csv">Travel Plan Processor</button>
     </nav>
 
@@ -53,6 +54,45 @@
         <div class="stats" id="gpx-stats"></div>
         <div class="file-list" id="gpx-file-list"></div>
         <button class="download-all-btn" id="gpx-download-all">Download All as ZIP</button>
+      </div>
+    </section>
+
+    <!-- GPX Combiner Panel -->
+    <section id="combiner-panel" class="panel">
+      <div class="upload-area" id="combiner-upload-area">
+        <div class="upload-content">
+          <span class="upload-icon">📂</span>
+          <p>Drag & drop multiple GPX files here</p>
+          <p class="upload-hint">or click to select</p>
+          <input type="file" id="combiner-file-input" accept=".gpx" multiple hidden>
+        </div>
+        <div class="file-info" id="combiner-file-info" hidden>
+          <span class="file-name"></span>
+          <span class="file-size"></span>
+          <button class="clear-btn" title="Clear">✕</button>
+        </div>
+      </div>
+
+      <div class="options">
+        <h3>Options</h3>
+        <div class="option-row">
+          <label for="combiner-track-name">Combined track name:</label>
+          <input type="text" id="combiner-track-name" value="Combined Track" placeholder="Enter track name">
+        </div>
+        <div class="option-row checkbox-row">
+          <label>
+            <input type="checkbox" id="combiner-remove-duplicates" checked>
+            Remove duplicate waypoints
+          </label>
+        </div>
+      </div>
+
+      <button class="process-btn" id="combiner-process-btn" disabled>Combine GPX Files</button>
+
+      <div class="results" id="combiner-results" hidden>
+        <h3>Results</h3>
+        <div class="stats" id="combiner-stats"></div>
+        <div class="file-list" id="combiner-file-list"></div>
       </div>
     </section>
 
