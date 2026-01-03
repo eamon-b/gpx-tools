@@ -88,15 +88,21 @@ describe('douglasPeucker', () => {
 });
 
 describe('removeElevationSpikes', () => {
-  it('should return same points when less than 2 points', () => {
-    const points: GpxPoint[] = [
+  it('should return same points when less than 3 points', () => {
+    const singlePoint: GpxPoint[] = [
       { lat: -37.8136, lon: 144.9631, ele: 50, time: null }
     ];
+    expect(removeElevationSpikes(singlePoint, 50)).toHaveLength(1);
+    expect(removeElevationSpikes(singlePoint, 50)[0].ele).toBe(50);
 
-    const result = removeElevationSpikes(points, 50);
-
-    expect(result).toHaveLength(1);
+    const twoPoints: GpxPoint[] = [
+      { lat: -37.8136, lon: 144.9631, ele: 50, time: null },
+      { lat: -37.8200, lon: 144.9700, ele: 150, time: null }
+    ];
+    const result = removeElevationSpikes(twoPoints, 50);
+    expect(result).toHaveLength(2);
     expect(result[0].ele).toBe(50);
+    expect(result[1].ele).toBe(150); // Not modified - need 3+ points to detect spikes
   });
 
   it('should not modify points within threshold', () => {
@@ -128,21 +134,101 @@ describe('removeElevationSpikes', () => {
     expect(result[2].ele).toBe(105);
   });
 
-  it('should handle multiple consecutive spikes with linear interpolation', () => {
+  it('should handle isolated spikes in sequence', () => {
+    // Create a pattern with two isolated spikes separated by valid points
+    // Each spike is higher than BOTH its immediate neighbors
     const points: GpxPoint[] = [
-      { lat: -37.8100, lon: 144.9600, ele: 100, time: null },
-      { lat: -37.8120, lon: 144.9620, ele: 200, time: null }, // spike
-      { lat: -37.8140, lon: 144.9640, ele: 300, time: null }, // spike
-      { lat: -37.8160, lon: 144.9660, ele: 105, time: null }
+      { lat: -37.8100, lon: 144.9600, ele: 100, time: null },  // valid
+      { lat: -37.8110, lon: 144.9610, ele: 250, time: null },  // spike: 250 > 100 and 250 > 102
+      { lat: -37.8120, lon: 144.9620, ele: 102, time: null },  // valid
+      { lat: -37.8130, lon: 144.9630, ele: 103, time: null },  // valid
+      { lat: -37.8140, lon: 144.9640, ele: 280, time: null },  // spike: 280 > 103 and 280 > 105
+      { lat: -37.8150, lon: 144.9650, ele: 105, time: null }   // valid
     ];
 
     const result = removeElevationSpikes(points, 50);
 
     expect(result[0].ele).toBe(100);
-    // Middle spikes should be interpolated between 100 and 105
-    expect(result[1].ele).toBeCloseTo(101.67, 1); // ~1/3 of the way
-    expect(result[2].ele).toBeCloseTo(103.33, 1); // ~2/3 of the way
+    // First spike interpolated between 100 and 102
+    expect(result[1].ele).toBeCloseTo(101, 0);
+    expect(result[2].ele).toBe(102);
+    expect(result[3].ele).toBe(103);
+    // Second spike interpolated between 103 and 105
+    expect(result[4].ele).toBeCloseTo(104, 0);
+    expect(result[5].ele).toBe(105);
+  });
+
+  it('should not treat gradual elevation changes as spikes', () => {
+    // This tests the case where elevation steadily increases then drops -
+    // the middle points should NOT be treated as spikes since they're part
+    // of a consistent trend, not isolated outliers
+    const points: GpxPoint[] = [
+      { lat: -37.8100, lon: 144.9600, ele: 100, time: null },
+      { lat: -37.8120, lon: 144.9620, ele: 200, time: null }, // +100 from prev
+      { lat: -37.8140, lon: 144.9640, ele: 300, time: null }, // +100 from prev
+      { lat: -37.8160, lon: 144.9660, ele: 105, time: null }  // -195 from prev
+    ];
+
+    const result = removeElevationSpikes(points, 50);
+
+    // Point 1 is NOT a spike: it's higher than point 0 but LOWER than point 2
+    // (different directions), so it's part of a climb, not an outlier
+    expect(result[0].ele).toBe(100);
+    expect(result[1].ele).toBe(200); // Not modified - part of upward trend
+
+    // Point 2 IS a spike: it's higher than BOTH neighbors (300 vs 200 and 105)
+    // So it should be interpolated between 200 and 105
+    expect(result[2].ele).toBeCloseTo(152.5, 0); // midpoint between 200 and 105
+
     expect(result[3].ele).toBe(105);
+  });
+
+  it('should handle downward spikes (dips)', () => {
+    // Test that the algorithm also catches downward spikes (valleys)
+    const points: GpxPoint[] = [
+      { lat: -37.8100, lon: 144.9600, ele: 200, time: null },
+      { lat: -37.8120, lon: 144.9620, ele: 50, time: null },  // dip: 50 < 200 and 50 < 195
+      { lat: -37.8140, lon: 144.9640, ele: 195, time: null }
+    ];
+
+    const result = removeElevationSpikes(points, 50);
+
+    expect(result[0].ele).toBe(200);
+    // Dip should be interpolated between 200 and 195
+    expect(result[1].ele).toBeCloseTo(197.5, 1);
+    expect(result[2].ele).toBe(195);
+  });
+
+  it('should preserve endpoints even if they look like spikes', () => {
+    // First and last points should never be modified since they can't be
+    // compared to both neighbors
+    const points: GpxPoint[] = [
+      { lat: -37.8100, lon: 144.9600, ele: 500, time: null },  // high start
+      { lat: -37.8120, lon: 144.9620, ele: 100, time: null },
+      { lat: -37.8140, lon: 144.9640, ele: 600, time: null }   // high end
+    ];
+
+    const result = removeElevationSpikes(points, 50);
+
+    // Endpoints should be preserved exactly
+    expect(result[0].ele).toBe(500);
+    expect(result[2].ele).toBe(600);
+    // Middle point is a dip, should be interpolated
+    expect(result[1].ele).toBeCloseTo(550, 0);
+  });
+
+  it('should handle all points at same elevation', () => {
+    const points: GpxPoint[] = [
+      { lat: -37.8100, lon: 144.9600, ele: 100, time: null },
+      { lat: -37.8120, lon: 144.9620, ele: 100, time: null },
+      { lat: -37.8140, lon: 144.9640, ele: 100, time: null },
+      { lat: -37.8160, lon: 144.9660, ele: 100, time: null }
+    ];
+
+    const result = removeElevationSpikes(points, 50);
+
+    // All points should remain unchanged
+    result.forEach(p => expect(p.ele).toBe(100));
   });
 });
 
@@ -515,32 +601,48 @@ describe('optimizeGpx', () => {
   });
 
   it('should warn when distance changes significantly', () => {
-    // Create GPX where simplification could significantly change measured distance
+    // Create GPX with a pronounced zigzag pattern that will lose significant
+    // distance when simplified with high tolerance
     let gpx = `<?xml version="1.0" encoding="UTF-8"?>
 <gpx version="1.1">
   <trk>
     <name>Zigzag Track</name>
     <trkseg>`;
 
-    // Zigzag pattern that will lose distance when simplified
-    for (let i = 0; i < 50; i++) {
-      const zigzag = i % 2 === 0 ? 0 : 0.01;
+    // Create a more aggressive zigzag pattern with larger lateral movements
+    // Each zigzag adds ~2.2km of lateral distance that will be lost when simplified
+    for (let i = 0; i < 20; i++) {
+      // Main track point
       gpx += `
-      <trkpt lat="${-37.8 + i * 0.001}" lon="${144.9 + zigzag}">
+      <trkpt lat="${-37.8 + i * 0.002}" lon="144.9">
+        <ele>100</ele>
+      </trkpt>`;
+      // Zigzag point - far lateral deviation
+      gpx += `
+      <trkpt lat="${-37.8 + i * 0.002 + 0.001}" lon="${144.9 + 0.02}">
         <ele>100</ele>
       </trkpt>`;
     }
+    // End point
+    gpx += `
+      <trkpt lat="${-37.8 + 20 * 0.002}" lon="144.9">
+        <ele>100</ele>
+      </trkpt>`;
 
     gpx += `
     </trkseg>
   </trk>
 </gpx>`;
 
-    // Use high tolerance and low warning threshold to trigger warning
+    // Use high tolerance to aggressively simplify, which will remove zigzag points
     const result = optimizeGpx(gpx, 'zigzag.gpx', {
-      simplificationTolerance: 100,
-      maxDistanceChangeRatio: 0.01  // Very strict - 1% threshold
+      simplificationTolerance: 500,     // Very high - will remove all zigzag points
+      maxDistanceChangeRatio: 0.05,     // 5% threshold
+      elevationSmoothing: false         // Disable to isolate the simplification effect
     });
+
+    // Verify that simplification removed significant points
+    expect(result.optimized.pointCount).toBeLessThan(result.original.pointCount);
 
     // Verify that a distance warning was generated
     const hasDistanceWarning = result.warnings.some(w => w.includes('Distance changed'));

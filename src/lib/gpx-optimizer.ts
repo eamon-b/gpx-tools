@@ -135,6 +135,10 @@ export function douglasPeucker(points: GpxPoint[], tolerance: number): GpxPoint[
  * Remove elevation spikes that exceed physical possibility
  * Uses linear interpolation between valid points when spikes are detected
  *
+ * A spike is identified when a point deviates significantly from BOTH its
+ * neighbors - i.e., it goes up (or down) sharply and then returns. This
+ * distinguishes true spikes from legitimate elevation changes.
+ *
  * @param points - Array of GPS points with elevation data
  * @param spikeThreshold - Maximum valid elevation change in meters between consecutive points
  * @returns Array of points with spikes interpolated
@@ -143,13 +147,30 @@ export function removeElevationSpikes(
   points: GpxPoint[],
   spikeThreshold: number
 ): GpxPoint[] {
-  if (points.length < 2) return points;
+  if (points.length < 3) return points;
 
-  // First pass: identify spike points
+  // Identify spike points: a point is a spike if it deviates significantly
+  // from BOTH neighbors in the same direction (up from both or down from both)
   const isSpike: boolean[] = new Array(points.length).fill(false);
-  for (let i = 1; i < points.length; i++) {
-    const elevationChange = Math.abs(points[i].ele - points[i - 1].ele);
-    if (elevationChange > spikeThreshold) {
+
+  for (let i = 1; i < points.length - 1; i++) {
+    const prevEle = points[i - 1].ele;
+    const currEle = points[i].ele;
+    const nextEle = points[i + 1].ele;
+
+    const diffFromPrev = currEle - prevEle;
+    const diffFromNext = currEle - nextEle;
+
+    // It's a spike if:
+    // 1. The point is significantly higher (or lower) than BOTH neighbors
+    // 2. Both differences exceed the threshold
+    // 3. Both differences are in the same direction (both positive or both negative)
+    const sameDirection = (diffFromPrev > 0 && diffFromNext > 0) ||
+                          (diffFromPrev < 0 && diffFromNext < 0);
+    const exceedsThreshold = Math.abs(diffFromPrev) > spikeThreshold &&
+                             Math.abs(diffFromNext) > spikeThreshold;
+
+    if (sameDirection && exceedsThreshold) {
       isSpike[i] = true;
     }
   }
