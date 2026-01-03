@@ -10,6 +10,7 @@ export type {
   SplitResult,
   CombineOptions,
   CombineResult,
+  RouteGap,
   ProcessOptions,
   ProcessResult,
   ProcessedRow,

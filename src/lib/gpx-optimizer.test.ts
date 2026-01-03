@@ -644,8 +644,8 @@ describe('optimizeGpx', () => {
     // Verify that simplification removed significant points
     expect(result.optimized.pointCount).toBeLessThan(result.original.pointCount);
 
-    // Verify that a distance warning was generated
-    const hasDistanceWarning = result.warnings.some(w => w.includes('Distance changed'));
+    // Verify that a distance warning was generated (shows increased or decreased)
+    const hasDistanceWarning = result.warnings.some(w => w.includes('Distance increased') || w.includes('Distance decreased'));
     expect(hasDistanceWarning).toBe(true);
     expect(result.passed).toBe(false);
   });
@@ -788,7 +788,6 @@ describe('GPX_OPTIMIZER_DEFAULTS', () => {
     expect(GPX_OPTIMIZER_DEFAULTS.coordinatePrecision).toBe(6);
     expect(GPX_OPTIMIZER_DEFAULTS.maxDistanceChangeRatio).toBe(0.05);
     expect(GPX_OPTIMIZER_DEFAULTS.maxElevationChangeRatio).toBe(0.15);
-    expect(GPX_OPTIMIZER_DEFAULTS.maxFileSizeBytes).toBe(20 * 1024);
     expect(GPX_OPTIMIZER_DEFAULTS.maxPointCount).toBe(100000);
     expect(GPX_OPTIMIZER_DEFAULTS.maxFileSize).toBe(50 * 1024 * 1024);
   });

@@ -168,7 +168,6 @@ export interface OptimizationOptions {
   // Validation thresholds
   maxDistanceChangeRatio: number;   // fraction (0-1) - warn if distance changes by more than this
   maxElevationChangeRatio: number;  // fraction (0-1) - warn if elevation gain changes by more than this
-  maxFileSizeBytes: number;         // bytes - warn if optimized file exceeds this size
   maxPointCount: number;            // maximum number of points to process (0 = unlimited)
   maxFileSize: number;              // maximum input file size in bytes (0 = unlimited)
 }

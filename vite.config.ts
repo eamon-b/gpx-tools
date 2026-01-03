@@ -68,6 +68,8 @@ export default defineConfig({
         enrich: resolve(__dirname, 'src/web/tools/enrich.html'),
         compare: resolve(__dirname, 'src/web/tools/compare.html'),
         daylight: resolve(__dirname, 'src/web/tools/daylight.html'),
+        combiner: resolve(__dirname, 'src/web/tools/combiner.html'),
+        optimizer: resolve(__dirname, 'src/web/tools/optimizer.html'),
         trails: resolve(__dirname, 'src/web/trails/index.html'),
         // Dynamically include all generated trail pages
         ...getTrailInputs(),

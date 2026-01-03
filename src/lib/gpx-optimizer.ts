@@ -26,7 +26,6 @@ export const GPX_OPTIMIZER_DEFAULTS: OptimizationOptions = {
   coordinatePrecision: 6,           // ~0.11 meter precision
   maxDistanceChangeRatio: 0.05,     // 5% - warn if distance changes by more than this
   maxElevationChangeRatio: 0.15,    // 15% - warn if elevation gain changes by more than this
-  maxFileSizeBytes: 20 * 1024,      // 20KB - warn if optimized file exceeds this size
   maxPointCount: 100000,            // 100k points maximum (0 = unlimited)
   maxFileSize: 50 * 1024 * 1024     // 50MB maximum input file size (0 = unlimited)
 }
@@ -583,22 +582,21 @@ export function optimizeGpx(
 
   // Validation checks
   if (originalStats.distance > 0) {
-    const distanceChange = Math.abs(optimizedStats.distance - originalStats.distance) / originalStats.distance;
-    if (distanceChange > opts.maxDistanceChangeRatio) {
-      warnings.push(`Distance changed by ${(distanceChange * 100).toFixed(1)}% (threshold: ${(opts.maxDistanceChangeRatio * 100).toFixed(1)}%)`);
+    const distanceChange = (optimizedStats.distance - originalStats.distance) / originalStats.distance;
+    if (Math.abs(distanceChange) > opts.maxDistanceChangeRatio) {
+      const direction = distanceChange > 0 ? 'increased' : 'decreased';
+      warnings.push(`Distance ${direction} by ${(Math.abs(distanceChange) * 100).toFixed(1)}% (threshold: ${(opts.maxDistanceChangeRatio * 100).toFixed(1)}%)`);
     }
   }
 
   if (originalStats.elevationGain > 0) {
-    const elevationChange = Math.abs(optimizedStats.elevationGain - originalStats.elevationGain) / originalStats.elevationGain;
-    if (elevationChange > opts.maxElevationChangeRatio) {
-      warnings.push(`Elevation gain changed by ${(elevationChange * 100).toFixed(1)}% (threshold: ${(opts.maxElevationChangeRatio * 100).toFixed(1)}%)`);
+    const elevationChange = (optimizedStats.elevationGain - originalStats.elevationGain) / originalStats.elevationGain;
+    if (Math.abs(elevationChange) > opts.maxElevationChangeRatio) {
+      const direction = elevationChange > 0 ? 'increased' : 'decreased';
+      warnings.push(`Elevation gain ${direction} by ${(Math.abs(elevationChange) * 100).toFixed(1)}% (threshold: ${(opts.maxElevationChangeRatio * 100).toFixed(1)}%)`);
     }
   }
 
-  if (optimizedStats.fileSize > opts.maxFileSizeBytes) {
-    warnings.push(`File size (${(optimizedStats.fileSize / 1024).toFixed(1)} KB) exceeds target of ${(opts.maxFileSizeBytes / 1024).toFixed(1)} KB`);
-  }
 
   if (optimizedStats.pointCount < 2) {
     warnings.push('Warning: Less than 2 points after optimization');

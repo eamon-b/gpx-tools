@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GPX Combiner - GPX Tools</title>
+  <link rel="stylesheet" href="../styles.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <nav class="breadcrumb">
+        <a href="../">Home</a> / <a href="./">Tools</a> / <span>GPX Combiner</span>
+      </nav>
+      <h1>GPX Combiner</h1>
+      <p class="subtitle">Merge multiple GPX files into a single continuous route</p>
+    </header>
+
+    <section class="panel active">
+      <div class="upload-area multi-upload" id="gpx-upload-area">
+        <div class="upload-content">
+          <span class="upload-icon">📂</span>
+          <p>Drag & drop GPX files here</p>
+          <p class="upload-hint">or click to select multiple files</p>
+          <input type="file" id="gpx-file-input" accept=".gpx" multiple hidden>
+        </div>
+      </div>
+
+      <div class="file-list-container" id="file-list-container" hidden>
+        <h3>Files to Combine</h3>
+        <p class="file-hint">Drag files to reorder. Files will be combined in this order.</p>
+        <ul class="sortable-file-list" id="sortable-file-list"></ul>
+        <button class="clear-all-btn" id="clear-all-btn">Clear All</button>
+      </div>
+
+      <div class="options">
+        <h3>Options</h3>
+        <div class="option-row">
+          <label for="track-name">Combined track name:</label>
+          <input type="text" id="track-name" value="Combined Track" placeholder="Combined Track">
+        </div>
+        <div class="option-row checkbox-row">
+          <input type="checkbox" id="remove-duplicates" checked>
+          <label for="remove-duplicates">Remove duplicate waypoints</label>
+        </div>
+        <div class="option-row checkbox-row">
+          <input type="checkbox" id="auto-order">
+          <label for="auto-order">Auto-order for best geographic continuity</label>
+        </div>
+        <div class="option-row">
+          <label for="gap-threshold">Gap warning threshold (meters):</label>
+          <input type="number" id="gap-threshold" value="100" min="10" max="10000">
+        </div>
+      </div>
+
+      <button class="process-btn" id="process-btn" disabled>Combine GPX Files</button>
+
+      <div class="results" id="results" hidden>
+        <h3>Results</h3>
+        <div class="stats" id="stats"></div>
+        <div class="warnings" id="warnings" hidden></div>
+        <div class="file-list" id="result-file">
+          <div class="file-item">
+            <div class="file-item-info">
+              <span class="file-item-name" id="result-filename"></span>
+              <span class="file-item-meta" id="result-meta"></span>
+            </div>
+            <button class="download-btn" id="download-btn">Download</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <footer>
+      <p>All processing happens locally in your browser. Your files are never uploaded.</p>
+      <p><a href="./">Back to Tools</a></p>
+    </footer>
+  </div>
+
+  <script type="module" src="./combiner.ts"></script>
+</body>
+</html>

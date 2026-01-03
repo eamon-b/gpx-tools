@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GPX Optimizer - GPX Tools</title>
+  <link rel="stylesheet" href="../styles.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <nav class="breadcrumb">
+        <a href="../">Home</a> / <a href="./">Tools</a> / <span>GPX Optimizer</span>
+      </nav>
+      <h1>GPX Optimizer</h1>
+      <p class="subtitle">Reduce file size while preserving route accuracy</p>
+    </header>
+
+    <section class="panel active">
+      <div class="upload-area multi-upload" id="gpx-upload-area">
+        <div class="upload-content">
+          <span class="upload-icon">📂</span>
+          <p>Drag & drop GPX files here</p>
+          <p class="upload-hint">or click to select (multiple files supported)</p>
+          <input type="file" id="gpx-file-input" accept=".gpx" multiple hidden>
+        </div>
+      </div>
+
+      <div class="file-list-container" id="file-list-container" hidden>
+        <h3>Files to Optimize</h3>
+        <ul class="file-list" id="input-file-list"></ul>
+        <button class="clear-all-btn" id="clear-all-btn">Clear All</button>
+      </div>
+
+      <div class="options">
+        <h3>Simplification</h3>
+        <div class="option-row">
+          <label for="simplification-tolerance">Tolerance (meters):</label>
+          <input type="number" id="simplification-tolerance" value="10" min="1" max="100" step="1">
+          <span class="option-hint">Higher = smaller file, less detail</span>
+        </div>
+
+        <h3>Elevation Processing</h3>
+        <div class="option-row checkbox-row">
+          <input type="checkbox" id="elevation-smoothing" checked>
+          <label for="elevation-smoothing">Smooth elevation data</label>
+        </div>
+        <div class="option-row">
+          <label for="smoothing-window">Smoothing window (points):</label>
+          <input type="number" id="smoothing-window" value="7" min="3" max="21" step="2">
+        </div>
+        <div class="option-row">
+          <label for="spike-threshold">Spike threshold (meters):</label>
+          <input type="number" id="spike-threshold" value="50" min="10" max="200">
+          <span class="option-hint">Max valid elevation change between points</span>
+        </div>
+
+        <h3>Privacy</h3>
+        <div class="option-row">
+          <label for="truncate-start">Truncate start (meters):</label>
+          <input type="number" id="truncate-start" value="0" min="0" max="5000">
+        </div>
+        <div class="option-row">
+          <label for="truncate-end">Truncate end (meters):</label>
+          <input type="number" id="truncate-end" value="0" min="0" max="5000">
+        </div>
+
+        <h3>Data Options</h3>
+        <div class="option-row checkbox-row">
+          <input type="checkbox" id="preserve-timestamps" checked>
+          <label for="preserve-timestamps">Preserve timestamps</label>
+        </div>
+        <div class="option-row">
+          <label for="coordinate-precision">Coordinate precision (decimals):</label>
+          <input type="number" id="coordinate-precision" value="6" min="4" max="8">
+          <span class="option-hint">6 = ~0.1m precision</span>
+        </div>
+      </div>
+
+      <button class="process-btn" id="process-btn" disabled>Optimize GPX Files</button>
+
+      <div class="results" id="results" hidden>
+        <h3>Results</h3>
+        <div class="stats" id="stats"></div>
+        <div class="warnings" id="warnings" hidden></div>
+        <div class="file-list" id="result-file-list"></div>
+        <button class="download-all-btn" id="download-all-btn">Download All as ZIP</button>
+      </div>
+    </section>
+
+    <footer>
+      <p>All processing happens locally in your browser. Your files are never uploaded.</p>
+      <p><a href="./">Back to Tools</a></p>
+    </footer>
+  </div>
+
+  <script type="module" src="./optimizer.ts"></script>
+</body>
+</html>

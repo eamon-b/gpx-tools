@@ -405,6 +405,48 @@ footer {
   color: #92400e;
 }
 
+/* Grouped file warnings */
+.warnings {
+  background: #fef3c7;
+  border: 1px solid #f59e0b;
+  border-radius: var(--radius);
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+
+.warnings h4 {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #92400e;
+  margin-bottom: 0.75rem;
+}
+
+.file-warnings {
+  margin-bottom: 0.75rem;
+}
+
+.file-warnings:last-child {
+  margin-bottom: 0;
+}
+
+.file-warnings strong {
+  display: block;
+  color: #92400e;
+  font-size: 0.875rem;
+  margin-bottom: 0.25rem;
+}
+
+.file-warnings ul {
+  list-style: disc;
+  margin-left: 1.25rem;
+  font-size: 0.875rem;
+  color: #78350f;
+}
+
+.file-warnings li {
+  margin-bottom: 0.125rem;
+}
+
 @media (max-width: 480px) {
   .option-row {
     flex-direction: column;
