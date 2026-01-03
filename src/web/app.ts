@@ -1,4 +1,4 @@
-import { splitGpx, combineGpx, processTravelPlan, processGpxTravelPlan, type SplitResult, type CombineResult, type ProcessResult, type DistanceUnit, type ElevationUnit, type CsvDelimiter } from '../lib';
+import { splitGpx, combineGpx, processTravelPlan, processGpxTravelPlan, optimizeGpx, type SplitResult, type CombineResult, type ProcessResult, type DistanceUnit, type ElevationUnit, type CsvDelimiter, type OptimizationResult, type OptimizationOptions } from '../lib';
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
 
@@ -49,13 +49,34 @@ const waypointMaxDistanceInput = document.getElementById('waypoint-max-distance'
 // GPX-only options elements
 const gpxOnlyOptions = document.querySelectorAll<HTMLElement>('.gpx-only-option');
 
+// Optimizer Elements
+const optimizerUploadArea = document.getElementById('optimizer-upload-area')!;
+const optimizerFileInput = document.getElementById('optimizer-file-input') as HTMLInputElement;
+const optimizerFileInfo = document.getElementById('optimizer-file-info')!;
+const optimizerProcessBtn = document.getElementById('optimizer-process-btn') as HTMLButtonElement;
+const optimizerResults = document.getElementById('optimizer-results')!;
+const optimizerStats = document.getElementById('optimizer-stats')!;
+const optimizerFileList = document.getElementById('optimizer-file-list')!;
+const optimizerDownloadAll = document.getElementById('optimizer-download-all')!;
+const simplificationToleranceInput = document.getElementById('simplification-tolerance') as HTMLInputElement;
+const simplificationToleranceValue = document.getElementById('simplification-tolerance-value')!;
+const elevationSmoothingCheckbox = document.getElementById('elevation-smoothing') as HTMLInputElement;
+const smoothingWindowInput = document.getElementById('smoothing-window') as HTMLInputElement;
+const spikeThresholdInput = document.getElementById('spike-threshold') as HTMLInputElement;
+const truncateStartInput = document.getElementById('truncate-start') as HTMLInputElement;
+const truncateEndInput = document.getElementById('truncate-end') as HTMLInputElement;
+const preserveTimestampsCheckbox = document.getElementById('preserve-timestamps') as HTMLInputElement;
+const elevationOptions = document.querySelectorAll<HTMLElement>('.elevation-option');
+
 // State
 let gpxFile: File | null = null;
 let combinerFiles: File[] = [];
 let csvFile: File | null = null;
+let optimizerFiles: File[] = [];
 let gpxSplitResults: SplitResult[] = [];
 let combinerResult: CombineResult | null = null;
 let csvProcessResults: ProcessResult | null = null;
+let optimizerResults_data: OptimizationResult[] = [];
 
 /**
  * Show or hide GPX-only options based on the selected file type
@@ -519,3 +540,251 @@ function savePreferences(): void {
 
 // Load preferences on startup
 loadPreferences();
+
+// ============ GPX Optimizer ============
+
+// Update tolerance display value
+simplificationToleranceInput.addEventListener('input', () => {
+  simplificationToleranceValue.textContent = `${simplificationToleranceInput.value}m`;
+});
+
+// Toggle elevation options visibility
+function updateElevationOptionsVisibility(): void {
+  const enabled = elevationSmoothingCheckbox.checked;
+  elevationOptions.forEach(el => {
+    el.classList.toggle('disabled', !enabled);
+    const inputs = el.querySelectorAll('input');
+    inputs.forEach(input => (input as HTMLInputElement).disabled = !enabled);
+  });
+}
+
+elevationSmoothingCheckbox.addEventListener('change', updateElevationOptionsVisibility);
+updateElevationOptionsVisibility();
+
+// Multi-file upload handling for optimizer
+function setupMultiFileUploadArea(
+  area: HTMLElement,
+  input: HTMLInputElement,
+  fileInfo: HTMLElement,
+  onFiles: (files: File[]) => void
+): void {
+  area.addEventListener('click', () => {
+    if (!area.classList.contains('has-file')) {
+      input.click();
+    }
+  });
+
+  area.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    area.classList.add('dragover');
+  });
+
+  area.addEventListener('dragleave', () => {
+    area.classList.remove('dragover');
+  });
+
+  area.addEventListener('drop', (e) => {
+    e.preventDefault();
+    area.classList.remove('dragover');
+    const files = e.dataTransfer?.files;
+    if (files && files.length > 0) {
+      onFiles(Array.from(files).filter(f => f.name.toLowerCase().endsWith('.gpx')));
+    }
+  });
+
+  input.addEventListener('change', () => {
+    if (input.files && input.files.length > 0) {
+      onFiles(Array.from(input.files));
+    }
+  });
+
+  const clearBtn = fileInfo.querySelector('.clear-btn');
+  clearBtn?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    input.value = '';
+    area.classList.remove('has-file');
+    area.querySelector('.upload-content')!.removeAttribute('hidden');
+    fileInfo.setAttribute('hidden', '');
+    onFiles([]);
+  });
+}
+
+function showMultiFileInfo(area: HTMLElement, fileInfo: HTMLElement, files: File[]): void {
+  area.classList.add('has-file');
+  area.querySelector('.upload-content')!.setAttribute('hidden', '');
+  fileInfo.removeAttribute('hidden');
+  const totalSize = files.reduce((sum, f) => sum + f.size, 0);
+  fileInfo.querySelector('.file-name')!.textContent = files.length === 1
+    ? files[0].name
+    : `${files.length} GPX files`;
+  fileInfo.querySelector('.file-size')!.textContent = formatFileSize(totalSize);
+}
+
+setupMultiFileUploadArea(optimizerUploadArea, optimizerFileInput, optimizerFileInfo, (files) => {
+  optimizerFiles = files;
+  if (files.length > 0) {
+    showMultiFileInfo(optimizerUploadArea, optimizerFileInfo, files);
+    optimizerProcessBtn.disabled = false;
+    optimizerResults.setAttribute('hidden', '');
+  } else {
+    optimizerProcessBtn.disabled = true;
+    optimizerResults.setAttribute('hidden', '');
+  }
+});
+
+optimizerProcessBtn.addEventListener('click', async () => {
+  if (optimizerFiles.length === 0) return;
+
+  optimizerProcessBtn.disabled = true;
+  optimizerProcessBtn.textContent = 'Optimizing...';
+
+  try {
+    const options: Partial<OptimizationOptions> = {
+      simplificationTolerance: parseInt(simplificationToleranceInput.value) || 10,
+      elevationSmoothing: elevationSmoothingCheckbox.checked,
+      elevationSmoothingWindow: parseInt(smoothingWindowInput.value) || 7,
+      spikeThreshold: parseInt(spikeThresholdInput.value) || 50,
+      truncateStart: parseInt(truncateStartInput.value) || 0,
+      truncateEnd: parseInt(truncateEndInput.value) || 0,
+      preserveTimestamps: preserveTimestampsCheckbox.checked,
+    };
+
+    optimizerResults_data = [];
+
+    for (const file of optimizerFiles) {
+      const content = await file.text();
+      const result = optimizeGpx(content, file.name, options);
+      optimizerResults_data.push(result);
+    }
+
+    // Show results
+    optimizerResults.removeAttribute('hidden');
+
+    // Calculate totals
+    const totalOriginalSize = optimizerResults_data.reduce((sum, r) => sum + r.original.fileSize, 0);
+    const totalOptimizedSize = optimizerResults_data.reduce((sum, r) => sum + r.optimized.fileSize, 0);
+    const totalOriginalPoints = optimizerResults_data.reduce((sum, r) => sum + r.original.pointCount, 0);
+    const totalOptimizedPoints = optimizerResults_data.reduce((sum, r) => sum + r.optimized.pointCount, 0);
+    const avgReduction = totalOriginalSize > 0
+      ? ((1 - totalOptimizedSize / totalOriginalSize) * 100)
+      : 0;
+    const filesWithWarnings = optimizerResults_data.filter(r => r.warnings.length > 0).length;
+
+    optimizerStats.innerHTML = `
+      <p><strong>Files processed:</strong> ${optimizerResults_data.length}</p>
+      <p><strong>Total points:</strong> ${totalOriginalPoints.toLocaleString()} → ${totalOptimizedPoints.toLocaleString()} (${((1 - totalOptimizedPoints / totalOriginalPoints) * 100).toFixed(1)}% reduction)</p>
+      <p><strong>Total size:</strong> ${formatFileSize(totalOriginalSize)} → ${formatFileSize(totalOptimizedSize)} (${avgReduction.toFixed(1)}% reduction)</p>
+      ${filesWithWarnings > 0 ? `<p class="warning"><strong>Warnings:</strong> ${filesWithWarnings} file(s) have warnings</p>` : ''}
+    `;
+
+    optimizerFileList.innerHTML = optimizerResults_data.map((result, i) => {
+      const pointReduction = ((1 - result.optimized.pointCount / result.original.pointCount) * 100).toFixed(1);
+      const sizeReduction = ((1 - result.optimized.fileSize / result.original.fileSize) * 100).toFixed(1);
+      const statusClass = result.passed ? 'passed' : 'warning';
+      const statusText = result.passed ? 'PASSED' : 'WARNING';
+
+      return `
+        <div class="file-item">
+          <div class="file-item-info">
+            <span class="file-item-name">${result.filename}</span>
+            <span class="file-item-meta">
+              ${result.original.pointCount.toLocaleString()} → ${result.optimized.pointCount.toLocaleString()} points (${pointReduction}% reduction)
+              | ${formatFileSize(result.original.fileSize)} → ${formatFileSize(result.optimized.fileSize)} (${sizeReduction}%)
+            </span>
+            <span class="file-item-status ${statusClass}">${statusText}</span>
+            ${result.warnings.length > 0 ? `<span class="file-item-warnings">${result.warnings.join('; ')}</span>` : ''}
+          </div>
+          <button class="download-btn" data-index="${i}">Download</button>
+        </div>
+      `;
+    }).join('');
+
+    // Add download handlers
+    optimizerFileList.querySelectorAll('.download-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const index = parseInt((btn as HTMLElement).dataset.index!);
+        const result = optimizerResults_data[index];
+        downloadFile(result.filename, result.content, 'application/gpx+xml');
+      });
+    });
+
+  } catch (error) {
+    alert(`Error optimizing GPX: ${error instanceof Error ? error.message : 'Unknown error'}`);
+  } finally {
+    optimizerProcessBtn.disabled = false;
+    optimizerProcessBtn.textContent = 'Optimize GPX Files';
+  }
+});
+
+optimizerDownloadAll.addEventListener('click', async () => {
+  if (optimizerResults_data.length === 0) return;
+
+  const zip = new JSZip();
+  for (const result of optimizerResults_data) {
+    zip.file(result.filename, result.content);
+  }
+
+  const blob = await zip.generateAsync({ type: 'blob' });
+  saveAs(blob, 'gpx-optimized.zip');
+});
+
+// Save optimizer preferences
+function saveOptimizerPreferences(): void {
+  const prefs = localStorage.getItem('gpx-tools-prefs');
+  const parsed = prefs ? JSON.parse(prefs) : {};
+  parsed.optimizer = {
+    simplificationTolerance: parseInt(simplificationToleranceInput.value),
+    elevationSmoothing: elevationSmoothingCheckbox.checked,
+    smoothingWindow: parseInt(smoothingWindowInput.value),
+    spikeThreshold: parseInt(spikeThresholdInput.value),
+    truncateStart: parseInt(truncateStartInput.value),
+    truncateEnd: parseInt(truncateEndInput.value),
+    preserveTimestamps: preserveTimestampsCheckbox.checked,
+  };
+  localStorage.setItem('gpx-tools-prefs', JSON.stringify(parsed));
+}
+
+function loadOptimizerPreferences(): void {
+  const prefs = localStorage.getItem('gpx-tools-prefs');
+  if (prefs) {
+    try {
+      const parsed = JSON.parse(prefs);
+      if (parsed.optimizer) {
+        if (parsed.optimizer.simplificationTolerance !== undefined) {
+          simplificationToleranceInput.value = parsed.optimizer.simplificationTolerance;
+          simplificationToleranceValue.textContent = `${parsed.optimizer.simplificationTolerance}m`;
+        }
+        if (parsed.optimizer.elevationSmoothing !== undefined) {
+          elevationSmoothingCheckbox.checked = parsed.optimizer.elevationSmoothing;
+        }
+        if (parsed.optimizer.smoothingWindow !== undefined) {
+          smoothingWindowInput.value = parsed.optimizer.smoothingWindow;
+        }
+        if (parsed.optimizer.spikeThreshold !== undefined) {
+          spikeThresholdInput.value = parsed.optimizer.spikeThreshold;
+        }
+        if (parsed.optimizer.truncateStart !== undefined) {
+          truncateStartInput.value = parsed.optimizer.truncateStart;
+        }
+        if (parsed.optimizer.truncateEnd !== undefined) {
+          truncateEndInput.value = parsed.optimizer.truncateEnd;
+        }
+        if (parsed.optimizer.preserveTimestamps !== undefined) {
+          preserveTimestampsCheckbox.checked = parsed.optimizer.preserveTimestamps;
+        }
+        updateElevationOptionsVisibility();
+      }
+    } catch {
+      // Ignore invalid stored prefs
+    }
+  }
+}
+
+// Add optimizer inputs to save handlers
+[simplificationToleranceInput, elevationSmoothingCheckbox, smoothingWindowInput,
+ spikeThresholdInput, truncateStartInput, truncateEndInput, preserveTimestampsCheckbox].forEach(input => {
+  input.addEventListener('change', saveOptimizerPreferences);
+});
+
+// Load optimizer preferences
+loadOptimizerPreferences();

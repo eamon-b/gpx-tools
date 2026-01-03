@@ -19,6 +19,10 @@ export type {
   CsvDelimiter,
   GpxProcessOptions,
   WaypointVisit,
+  OptimizationOptions,
+  OptimizationResult,
+  OptimizationStats,
+  BatchOptimizationStats,
 } from './types';
 
 // GPX Parser
@@ -53,3 +57,17 @@ export {
   GPX_DATASHEET_DEFAULTS,
   GPX_DEFAULT_RESUPPLY_KEYWORDS,
 } from './gpx-datasheet';
+
+// GPX Optimizer
+export {
+  optimizeGpx,
+  optimizeGpxBatch,
+  douglasPeucker,
+  removeElevationSpikes,
+  smoothElevation,
+  calculateTrackDistance,
+  calculateElevationStats,
+  truncateTrack,
+  roundCoordinates,
+  GPX_OPTIMIZER_DEFAULTS,
+} from './gpx-optimizer';
