@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Example Trail - GPX Tools</title>
+  <link rel="stylesheet" href="../../styles.css">
+  <style>
+    .trail-header {
+      margin-bottom: 2rem;
+    }
+    .trail-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 1rem;
+      margin-top: 1rem;
+    }
+    .trail-meta-item {
+      background: var(--bg-secondary, #f5f5f5);
+      padding: 0.5rem 1rem;
+      border-radius: 4px;
+    }
+    .trail-meta-item strong {
+      display: block;
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      opacity: 0.7;
+    }
+    .trail-stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 1rem;
+      margin: 2rem 0;
+    }
+    .stat-card {
+      background: var(--bg-secondary, #f5f5f5);
+      padding: 1rem;
+      border-radius: 8px;
+      text-align: center;
+    }
+    .stat-card .value {
+      font-size: 1.5rem;
+      font-weight: bold;
+    }
+    .stat-card .label {
+      font-size: 0.875rem;
+      opacity: 0.7;
+    }
+    .elevation-profile {
+      width: 100%;
+      height: 200px;
+      background: var(--bg-secondary, #f5f5f5);
+      border-radius: 8px;
+      margin: 2rem 0;
+      position: relative;
+    }
+    .elevation-profile canvas {
+      width: 100%;
+      height: 100%;
+    }
+    .waypoints-list {
+      list-style: none;
+      padding: 0;
+    }
+    .waypoints-list li {
+      padding: 0.75rem;
+      border-bottom: 1px solid var(--border-color, #ddd);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .waypoints-list li:last-child {
+      border-bottom: none;
+    }
+    .waypoint-type {
+      font-size: 0.75rem;
+      padding: 0.25rem 0.5rem;
+      border-radius: 4px;
+      background: var(--accent-light, #e3f2fd);
+    }
+    .poi-section {
+      margin-top: 2rem;
+    }
+    .poi-category {
+      margin-bottom: 1.5rem;
+    }
+    .poi-category h4 {
+      margin-bottom: 0.5rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .poi-count {
+      font-size: 0.875rem;
+      opacity: 0.7;
+      font-weight: normal;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <nav class="breadcrumb">
+        <a href="../../">Home</a> / <a href="../">Trails</a> / <span>Example</span>
+      </nav>
+    </header>
+
+    <section class="panel active">
+      <div class="trail-header">
+        <h1>Example Trail</h1>
+        <div class="trail-meta">
+          <div class="trail-meta-item">
+            <strong>Region</strong>
+            Sample Region
+          </div>
+          <div class="trail-meta-item">
+            <strong>Difficulty</strong>
+            moderate
+          </div>
+          <div class="trail-meta-item">
+            <strong>Best Months</strong>
+            Mar, Apr, May, Sep, Oct, Nov
+          </div>
+        </div>
+      </div>
+
+      <div class="trail-stats">
+        <div class="stat-card">
+          <div class="value" id="distance">--</div>
+          <div class="label">Distance (km)</div>
+        </div>
+        <div class="stat-card">
+          <div class="value" id="ascent">--</div>
+          <div class="label">Total Ascent (m)</div>
+        </div>
+        <div class="stat-card">
+          <div class="value" id="descent">--</div>
+          <div class="label">Total Descent (m)</div>
+        </div>
+        <div class="stat-card">
+          <div class="value" id="points">--</div>
+          <div class="label">Track Points</div>
+        </div>
+      </div>
+
+      <h3>Elevation Profile</h3>
+      <div class="elevation-profile">
+        <canvas id="elevation-canvas"></canvas>
+      </div>
+
+      <h3>Waypoints</h3>
+      <ul class="waypoints-list" id="waypoints-list">
+        <li>Loading waypoints...</li>
+      </ul>
+
+      <div class="poi-section" id="poi-section" hidden>
+        <h3>Points of Interest</h3>
+        <div id="poi-categories"></div>
+      </div>
+    </section>
+
+    <footer>
+      <p><a href="../">Back to Trail List</a></p>
+    </footer>
+  </div>
+
+  <script type="module">
+    const TRAIL_ID = 'example-trail';
+    const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+    async function loadTrailData() {
+      try {
+        const response = await fetch(`../../data/generated/${TRAIL_ID}.json`);
+        if (!response.ok) throw new Error('Trail data not found');
+        return await response.json();
+      } catch (error) {
+        console.error('Failed to load trail data:', error);
+        return null;
+      }
+    }
+
+    function updateStats(trail) {
+      document.getElementById('distance').textContent = trail.track.totalDistance.toFixed(1);
+      document.getElementById('ascent').textContent = Math.round(trail.track.totalAscent);
+      document.getElementById('descent').textContent = Math.round(trail.track.totalDescent);
+      document.getElementById('points').textContent = trail.track.points.length.toLocaleString();
+    }
+
+    function drawElevationProfile(points) {
+      const canvas = document.getElementById('elevation-canvas');
+      const ctx = canvas.getContext('2d');
+      const rect = canvas.getBoundingClientRect();
+
+      canvas.width = rect.width * window.devicePixelRatio;
+      canvas.height = rect.height * window.devicePixelRatio;
+      ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
+
+      if (points.length === 0) return;
+
+      const elevations = points.map(p => p.ele);
+      const distances = points.map(p => p.dist);
+      const minEle = Math.min(...elevations);
+      const maxEle = Math.max(...elevations);
+      const maxDist = Math.max(...distances);
+
+      const padding = { top: 20, right: 20, bottom: 30, left: 50 };
+      const width = rect.width - padding.left - padding.right;
+      const height = rect.height - padding.top - padding.bottom;
+
+      // Draw grid
+      ctx.strokeStyle = '#ddd';
+      ctx.lineWidth = 1;
+      for (let i = 0; i <= 4; i++) {
+        const y = padding.top + (height / 4) * i;
+        ctx.beginPath();
+        ctx.moveTo(padding.left, y);
+        ctx.lineTo(padding.left + width, y);
+        ctx.stroke();
+      }
+
+      // Draw profile
+      ctx.beginPath();
+      ctx.strokeStyle = '#2196F3';
+      ctx.lineWidth = 2;
+
+      points.forEach((point, i) => {
+        const x = padding.left + (point.dist / maxDist) * width;
+        const y = padding.top + height - ((point.ele - minEle) / (maxEle - minEle)) * height;
+
+        if (i === 0) {
+          ctx.moveTo(x, y);
+        } else {
+          ctx.lineTo(x, y);
+        }
+      });
+      ctx.stroke();
+
+      // Fill under curve
+      ctx.lineTo(padding.left + width, padding.top + height);
+      ctx.lineTo(padding.left, padding.top + height);
+      ctx.closePath();
+      ctx.fillStyle = 'rgba(33, 150, 243, 0.1)';
+      ctx.fill();
+
+      // Draw labels
+      ctx.fillStyle = '#666';
+      ctx.font = '12px system-ui, sans-serif';
+      ctx.textAlign = 'right';
+      ctx.fillText(`${Math.round(maxEle)}m`, padding.left - 5, padding.top + 10);
+      ctx.fillText(`${Math.round(minEle)}m`, padding.left - 5, padding.top + height);
+
+      ctx.textAlign = 'center';
+      ctx.fillText('0 km', padding.left, padding.top + height + 20);
+      ctx.fillText(`${maxDist.toFixed(0)} km`, padding.left + width, padding.top + height + 20);
+    }
+
+    function renderWaypoints(waypoints) {
+      const list = document.getElementById('waypoints-list');
+
+      if (!waypoints || waypoints.length === 0) {
+        list.innerHTML = '<li>No waypoints defined</li>';
+        return;
+      }
+
+      list.innerHTML = waypoints.map(wp => `
+        <li>
+          <span>${wp.name || 'Unnamed'}</span>
+          <span class="waypoint-type">${wp.type || 'waypoint'}</span>
+        </li>
+      `).join('');
+    }
+
+    function renderPOIs(pois) {
+      if (!pois || pois.length === 0) return;
+
+      const section = document.getElementById('poi-section');
+      const container = document.getElementById('poi-categories');
+      section.removeAttribute('hidden');
+
+      // Group by category
+      const grouped = {};
+      for (const poi of pois) {
+        if (!grouped[poi.category]) grouped[poi.category] = [];
+        grouped[poi.category].push(poi);
+      }
+
+      const categoryLabels = {
+        water: 'Water Sources',
+        camping: 'Camping',
+        resupply: 'Resupply',
+        transport: 'Transport',
+        emergency: 'Emergency'
+      };
+
+      container.innerHTML = Object.entries(grouped).map(([category, items]) => `
+        <div class="poi-category">
+          <h4>${categoryLabels[category] || category} <span class="poi-count">(${items.length})</span></h4>
+          <ul class="waypoints-list">
+            ${items.slice(0, 10).map(poi => `
+              <li>
+                <span>${poi.name || poi.tags?.amenity || poi.tags?.tourism || 'Unnamed'}</span>
+                <span class="waypoint-type">${(poi.distanceAlongTrail || 0).toFixed(1)} km</span>
+              </li>
+            `).join('')}
+            ${items.length > 10 ? `<li><em>...and ${items.length - 10} more</em></li>` : ''}
+          </ul>
+        </div>
+      `).join('');
+    }
+
+    async function init() {
+      const trail = await loadTrailData();
+      if (!trail) {
+        document.querySelector('.panel').innerHTML = '<p>Failed to load trail data.</p>';
+        return;
+      }
+
+      updateStats(trail);
+      drawElevationProfile(trail.track.points);
+      renderWaypoints(trail.waypoints);
+      renderPOIs(trail.pois);
+
+      // Redraw on resize
+      window.addEventListener('resize', () => drawElevationProfile(trail.track.points));
+    }
+
+    init();
+  </script>
+</body>
+</html>

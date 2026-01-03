@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="GPX Tools Example"
+  xmlns="http://www.topografix.com/GPX/1/1">
+  <metadata>
+    <name>Example Trail</name>
+    <desc>A sample trail for demonstration purposes</desc>
+  </metadata>
+  <trk>
+    <name>Example Trail</name>
+    <trkseg>
+      <!-- Sample points along a fictional trail -->
+      <!-- Replace with your actual GPX data -->
+      <trkpt lat="-35.2809" lon="149.1300">
+        <ele>580</ele>
+      </trkpt>
+      <trkpt lat="-35.2820" lon="149.1320">
+        <ele>595</ele>
+      </trkpt>
+      <trkpt lat="-35.2835" lon="149.1345">
+        <ele>610</ele>
+      </trkpt>
+      <trkpt lat="-35.2850" lon="149.1370">
+        <ele>625</ele>
+      </trkpt>
+      <trkpt lat="-35.2870" lon="149.1400">
+        <ele>640</ele>
+      </trkpt>
+      <trkpt lat="-35.2890" lon="149.1430">
+        <ele>655</ele>
+      </trkpt>
+      <trkpt lat="-35.2910" lon="149.1460">
+        <ele>670</ele>
+      </trkpt>
+      <trkpt lat="-35.2935" lon="149.1485">
+        <ele>685</ele>
+      </trkpt>
+      <trkpt lat="-35.2960" lon="149.1510">
+        <ele>700</ele>
+      </trkpt>
+      <trkpt lat="-35.2985" lon="149.1540">
+        <ele>715</ele>
+      </trkpt>
+      <trkpt lat="-35.3010" lon="149.1570">
+        <ele>730</ele>
+      </trkpt>
+      <trkpt lat="-35.3040" lon="149.1600">
+        <ele>745</ele>
+      </trkpt>
+      <trkpt lat="-35.3070" lon="149.1630">
+        <ele>760</ele>
+      </trkpt>
+      <trkpt lat="-35.3100" lon="149.1660">
+        <ele>750</ele>
+      </trkpt>
+      <trkpt lat="-35.3130" lon="149.1690">
+        <ele>735</ele>
+      </trkpt>
+      <trkpt lat="-35.3160" lon="149.1720">
+        <ele>720</ele>
+      </trkpt>
+    </trkseg>
+  </trk>
+</gpx>
