@@ -21,6 +21,30 @@ ${points}
 </gpx>`;
   }
 
+  // Helper to create a GPX with specific start/end coordinates
+  function createGpxWithCoords(
+    startLat: number, startLon: number,
+    endLat: number, endLon: number,
+    numPoints: number = 10
+  ): string {
+    const points = Array.from({ length: numPoints }, (_, i) => {
+      const t = i / (numPoints - 1);
+      const lat = startLat + t * (endLat - startLat);
+      const lon = startLon + t * (endLon - startLon);
+      return `      <trkpt lat="${lat}" lon="${lon}"><ele>${i}</ele></trkpt>`;
+    }).join('\n');
+
+    return `<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1">
+  <trk>
+    <name>Track</name>
+    <trkseg>
+${points}
+    </trkseg>
+  </trk>
+</gpx>`;
+  }
+
   // Helper to create a GPX with waypoints
   function createGpxWithWaypoints(waypoints: Array<{ lat: number; lon: number; name: string }>): string {
     const wpts = waypoints.map(w => `  <wpt lat="${w.lat}" lon="${w.lon}">
@@ -101,6 +125,19 @@ ${wpts}
     const result = combineGpx([gpx1, gpx2], { removeDuplicateWaypoints: false });
 
     expect(result.waypointCount).toBe(2);
+  });
+
+  it('should detect duplicates with minor floating point differences', () => {
+    const gpx1 = createGpxWithWaypoints([
+      { lat: -37.8136, lon: 144.9631, name: 'Waypoint 1' }
+    ]);
+    const gpx2 = createGpxWithWaypoints([
+      { lat: -37.81360001, lon: 144.96310001, name: 'Waypoint 1' } // Same location with precision diff
+    ]);
+
+    const result = combineGpx([gpx1, gpx2]);
+
+    expect(result.waypointCount).toBe(1); // Should be deduplicated
   });
 
   it('should handle routes in addition to tracks', () => {
@@ -186,7 +223,8 @@ ${wpts}
   it('should use default options when none provided', () => {
     expect(GPX_COMBINER_DEFAULTS.trackName).toBe('Combined Track');
     expect(GPX_COMBINER_DEFAULTS.removeDuplicateWaypoints).toBe(true);
-    expect(GPX_COMBINER_DEFAULTS.mergeAllSegments).toBe(true);
+    expect(GPX_COMBINER_DEFAULTS.autoOrder).toBe(false);
+    expect(GPX_COMBINER_DEFAULTS.gapThresholdMeters).toBe(100);
   });
 
   it('should handle empty tracks', () => {
@@ -210,5 +248,114 @@ ${wpts}
     // Note: elevation 0 is not written to GPX (per generateGpx logic)
     expect(result.content).toContain('<ele>1</ele>');
     expect(result.content).toContain('<ele>2</ele>');
+  });
+
+  it('should return segment order and gap info by default', () => {
+    const gpx1 = createSimpleGpx('Track 1', 10);
+    const result = combineGpx([gpx1]);
+
+    expect(result.gaps).toEqual([]);
+    expect(result.wasReordered).toBe(false);
+    expect(result.segmentOrder).toEqual([0]);
+  });
+
+  it('should detect gaps between segments', () => {
+    // Create two tracks that are far apart (about 111km apart in latitude)
+    const gpx1 = createGpxWithCoords(-37.0, 144.0, -37.1, 144.0);
+    const gpx2 = createGpxWithCoords(-38.0, 144.0, -38.1, 144.0);
+
+    const result = combineGpx([gpx1, gpx2], { gapThresholdMeters: 100 });
+
+    expect(result.gaps.length).toBe(1);
+    expect(result.gaps[0].afterSegmentIndex).toBe(0);
+    expect(result.gaps[0].distanceMeters).toBeGreaterThan(90000); // ~100km
+    expect(result.gaps[0].fromPoint.lat).toBeCloseTo(-37.1, 1);
+    expect(result.gaps[0].toPoint.lat).toBeCloseTo(-38.0, 1);
+  });
+
+  it('should not report gaps when segments are close together', () => {
+    // Create two tracks that connect (end of first is start of second)
+    const gpx1 = createGpxWithCoords(-37.0, 144.0, -37.001, 144.0);
+    const gpx2 = createGpxWithCoords(-37.001, 144.0, -37.002, 144.0);
+
+    const result = combineGpx([gpx1, gpx2], { gapThresholdMeters: 200 });
+
+    expect(result.gaps.length).toBe(0);
+  });
+
+  it('should reorder segments when autoOrder is enabled', () => {
+    // Segment A: goes from point 1 to point 2
+    // Segment B: goes from point 3 to point 4 (far from A)
+    // Segment C: goes from point 2 to point 3 (connects A to B)
+    // Input order: A, B, C
+    // Expected output order: A, C, B (because C connects to end of A, then B connects to end of C)
+
+    const segmentA = createGpxWithCoords(-37.0, 144.0, -37.01, 144.0); // ends at -37.01
+    const segmentB = createGpxWithCoords(-37.03, 144.0, -37.04, 144.0); // starts at -37.03
+    const segmentC = createGpxWithCoords(-37.01, 144.0, -37.02, 144.0); // starts at -37.01 (connects to A)
+
+    const result = combineGpx([segmentA, segmentB, segmentC], { autoOrder: true });
+
+    expect(result.wasReordered).toBe(true);
+    expect(result.segmentOrder).toEqual([0, 2, 1]); // A, C, B
+  });
+
+  it('should reverse segments when needed for better continuity', () => {
+    // Segment A: goes from point 1 to point 2
+    // Segment B: goes from point 3 to point 2 (end matches end of A - needs reversal)
+
+    const segmentA = createGpxWithCoords(-37.0, 144.0, -37.01, 144.0); // ends at -37.01
+    const segmentB = createGpxWithCoords(-37.03, 144.0, -37.01, 144.0); // ends at -37.01 (should reverse)
+
+    const result = combineGpx([segmentA, segmentB], { autoOrder: true });
+
+    expect(result.wasReordered).toBe(true);
+    // After reversal, first point of combined should be from A, last should be from reversed B
+    expect(result.content).toMatch(/<trkpt lat="-37"/);
+  });
+
+  it('should not reorder when autoOrder is false', () => {
+    const segmentA = createGpxWithCoords(-37.0, 144.0, -37.01, 144.0);
+    const segmentB = createGpxWithCoords(-37.03, 144.0, -37.04, 144.0);
+    const segmentC = createGpxWithCoords(-37.01, 144.0, -37.02, 144.0);
+
+    const result = combineGpx([segmentA, segmentB, segmentC], { autoOrder: false });
+
+    expect(result.wasReordered).toBe(false);
+    expect(result.segmentOrder).toEqual([0, 1, 2]); // Original order preserved
+  });
+
+  it('should still detect gaps when autoOrder is false', () => {
+    const gpx1 = createGpxWithCoords(-37.0, 144.0, -37.1, 144.0);
+    const gpx2 = createGpxWithCoords(-38.0, 144.0, -38.1, 144.0);
+
+    const result = combineGpx([gpx1, gpx2], { autoOrder: false, gapThresholdMeters: 100 });
+
+    expect(result.gaps.length).toBe(1);
+    expect(result.wasReordered).toBe(false);
+  });
+
+  it('should handle single segment with autoOrder enabled', () => {
+    const gpx = createSimpleGpx('Track 1', 10);
+    const result = combineGpx([gpx], { autoOrder: true });
+
+    expect(result.wasReordered).toBe(false);
+    expect(result.segmentOrder).toEqual([0]);
+    expect(result.gaps).toEqual([]);
+  });
+
+  it('should handle empty files gracefully with autoOrder', () => {
+    const emptyGpx = `<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1">
+  <trk>
+    <name>Empty Track</name>
+  </trk>
+</gpx>`;
+    const validGpx = createSimpleGpx('Valid Track', 10);
+
+    const result = combineGpx([emptyGpx, validGpx], { autoOrder: true });
+
+    expect(result.pointCount).toBe(10);
+    expect(result.segmentOrder).toEqual([1]); // Only the valid segment
   });
 });

@@ -1,4 +1,4 @@
-import { splitGpx, processTravelPlan, processGpxTravelPlan, type SplitResult, type ProcessResult, type DistanceUnit, type ElevationUnit, type CsvDelimiter } from '../lib';
+import { splitGpx, combineGpx, processTravelPlan, processGpxTravelPlan, type SplitResult, type CombineResult, type ProcessResult, type DistanceUnit, type ElevationUnit, type CsvDelimiter } from '../lib';
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
 
@@ -17,6 +17,17 @@ const gpxFileList = document.getElementById('gpx-file-list')!;
 const gpxDownloadAll = document.getElementById('gpx-download-all')!;
 const maxPointsInput = document.getElementById('max-points') as HTMLInputElement;
 const waypointDistanceInput = document.getElementById('waypoint-distance') as HTMLInputElement;
+
+// Combiner Elements
+const combinerUploadArea = document.getElementById('combiner-upload-area')!;
+const combinerFileInput = document.getElementById('combiner-file-input') as HTMLInputElement;
+const combinerFileInfo = document.getElementById('combiner-file-info')!;
+const combinerProcessBtn = document.getElementById('combiner-process-btn') as HTMLButtonElement;
+const combinerResults = document.getElementById('combiner-results')!;
+const combinerStats = document.getElementById('combiner-stats')!;
+const combinerFileList = document.getElementById('combiner-file-list')!;
+const combinerTrackNameInput = document.getElementById('combiner-track-name') as HTMLInputElement;
+const combinerRemoveDuplicatesCheckbox = document.getElementById('combiner-remove-duplicates') as HTMLInputElement;
 
 // CSV Elements
 const csvUploadArea = document.getElementById('csv-upload-area')!;
@@ -40,8 +51,10 @@ const gpxOnlyOptions = document.querySelectorAll<HTMLElement>('.gpx-only-option'
 
 // State
 let gpxFile: File | null = null;
+let combinerFiles: File[] = [];
 let csvFile: File | null = null;
 let gpxSplitResults: SplitResult[] = [];
+let combinerResult: CombineResult | null = null;
 let csvProcessResults: ProcessResult | null = null;
 
 /**
@@ -212,6 +225,112 @@ gpxDownloadAll.addEventListener('click', async () => {
   saveAs(blob, `${baseName}-split.zip`);
 });
 
+// Combiner handling - custom setup for multiple files
+combinerUploadArea.addEventListener('click', () => {
+  if (!combinerUploadArea.classList.contains('has-file')) {
+    combinerFileInput.click();
+  }
+});
+
+combinerUploadArea.addEventListener('dragover', (e) => {
+  e.preventDefault();
+  combinerUploadArea.classList.add('dragover');
+});
+
+combinerUploadArea.addEventListener('dragleave', () => {
+  combinerUploadArea.classList.remove('dragover');
+});
+
+combinerUploadArea.addEventListener('drop', (e) => {
+  e.preventDefault();
+  combinerUploadArea.classList.remove('dragover');
+  const files = e.dataTransfer?.files;
+  if (files && files.length > 0) {
+    handleCombinerFiles(Array.from(files).filter(f => f.name.toLowerCase().endsWith('.gpx')));
+  }
+});
+
+combinerFileInput.addEventListener('change', () => {
+  if (combinerFileInput.files && combinerFileInput.files.length > 0) {
+    handleCombinerFiles(Array.from(combinerFileInput.files));
+  }
+});
+
+combinerFileInfo.querySelector('.clear-btn')?.addEventListener('click', (e) => {
+  e.stopPropagation();
+  combinerFileInput.value = '';
+  combinerUploadArea.classList.remove('has-file');
+  combinerUploadArea.querySelector('.upload-content')!.removeAttribute('hidden');
+  combinerFileInfo.setAttribute('hidden', '');
+  combinerFiles = [];
+  combinerProcessBtn.disabled = true;
+  combinerResults.setAttribute('hidden', '');
+});
+
+function handleCombinerFiles(files: File[]): void {
+  combinerFiles = files;
+  if (files.length > 0) {
+    combinerUploadArea.classList.add('has-file');
+    combinerUploadArea.querySelector('.upload-content')!.setAttribute('hidden', '');
+    combinerFileInfo.removeAttribute('hidden');
+    combinerFileInfo.querySelector('.file-name')!.textContent = `${files.length} file${files.length > 1 ? 's' : ''} selected`;
+    const totalSize = files.reduce((sum, f) => sum + f.size, 0);
+    combinerFileInfo.querySelector('.file-size')!.textContent = formatFileSize(totalSize);
+    combinerProcessBtn.disabled = false;
+    combinerResults.setAttribute('hidden', '');
+  } else {
+    combinerProcessBtn.disabled = true;
+  }
+}
+
+combinerProcessBtn.addEventListener('click', async () => {
+  if (combinerFiles.length === 0) return;
+
+  combinerProcessBtn.disabled = true;
+  combinerProcessBtn.textContent = 'Processing...';
+
+  try {
+    const contents = await Promise.all(combinerFiles.map(f => f.text()));
+    const trackName = combinerTrackNameInput.value || 'Combined Track';
+    const removeDuplicateWaypoints = combinerRemoveDuplicatesCheckbox.checked;
+
+    combinerResult = combineGpx(contents, { trackName, removeDuplicateWaypoints });
+
+    // Show results
+    combinerResults.removeAttribute('hidden');
+
+    combinerStats.innerHTML = `
+      <p><strong>Files combined:</strong> ${combinerResult.fileCount}</p>
+      <p><strong>Total points:</strong> ${combinerResult.pointCount.toLocaleString()}</p>
+      <p><strong>Waypoints:</strong> ${combinerResult.waypointCount}</p>
+    `;
+
+    const outputFilename = `${trackName.replace(/[<>:"/\\|?*]/g, '_')}.gpx`;
+
+    combinerFileList.innerHTML = `
+      <div class="file-item">
+        <div class="file-item-info">
+          <span class="file-item-name">${outputFilename}</span>
+          <span class="file-item-meta">${combinerResult.pointCount.toLocaleString()} points, ${combinerResult.waypointCount} waypoints</span>
+        </div>
+        <button class="download-btn" id="combiner-download-btn">Download</button>
+      </div>
+    `;
+
+    document.getElementById('combiner-download-btn')?.addEventListener('click', () => {
+      if (combinerResult) {
+        downloadFile(outputFilename, combinerResult.content, 'application/gpx+xml');
+      }
+    });
+
+  } catch (error) {
+    alert(`Error combining GPX files: ${error instanceof Error ? error.message : 'Unknown error'}`);
+  } finally {
+    combinerProcessBtn.disabled = false;
+    combinerProcessBtn.textContent = 'Combine GPX Files';
+  }
+});
+
 // CSV handling
 setupUploadArea(csvUploadArea, csvFileInput, csvFileInfo, (file) => {
   csvFile = file;
@@ -353,6 +472,8 @@ function loadPreferences(): void {
       const parsed = JSON.parse(prefs);
       if (parsed.gpx?.maxPoints) maxPointsInput.value = parsed.gpx.maxPoints;
       if (parsed.gpx?.waypointDistance) waypointDistanceInput.value = parsed.gpx.waypointDistance;
+      if (parsed.combiner?.trackName) combinerTrackNameInput.value = parsed.combiner.trackName;
+      if (parsed.combiner?.removeDuplicateWaypoints !== undefined) combinerRemoveDuplicatesCheckbox.checked = parsed.combiner.removeDuplicateWaypoints;
       if (parsed.csv?.resupplyKeywords) resupplyKeywordsInput.value = parsed.csv.resupplyKeywords.join(', ');
       if (parsed.csv?.includeStartAsResupply !== undefined) includeStartCheckbox.checked = parsed.csv.includeStartAsResupply;
       if (parsed.csv?.includeEndAsResupply !== undefined) includeEndCheckbox.checked = parsed.csv.includeEndAsResupply;
@@ -372,6 +493,10 @@ function savePreferences(): void {
       maxPoints: parseInt(maxPointsInput.value),
       waypointDistance: parseFloat(waypointDistanceInput.value),
     },
+    combiner: {
+      trackName: combinerTrackNameInput.value,
+      removeDuplicateWaypoints: combinerRemoveDuplicatesCheckbox.checked,
+    },
     csv: {
       resupplyKeywords: resupplyKeywordsInput.value.split(',').map(k => k.trim()).filter(k => k),
       includeStartAsResupply: includeStartCheckbox.checked,
@@ -386,7 +511,8 @@ function savePreferences(): void {
 }
 
 // Save preferences on change
-[maxPointsInput, waypointDistanceInput, resupplyKeywordsInput, includeStartCheckbox, includeEndCheckbox,
+[maxPointsInput, waypointDistanceInput, combinerTrackNameInput, combinerRemoveDuplicatesCheckbox,
+ resupplyKeywordsInput, includeStartCheckbox, includeEndCheckbox,
  distanceUnitSelect, elevationUnitSelect, csvDelimiterSelect, waypointMaxDistanceInput].forEach(input => {
   input.addEventListener('change', savePreferences);
 });

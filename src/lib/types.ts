@@ -51,7 +51,21 @@ export interface SplitResult {
 export interface CombineOptions {
   trackName: string;
   removeDuplicateWaypoints: boolean;
-  mergeAllSegments: boolean;
+  /** Enable automatic reordering of routes for best geographic continuity */
+  autoOrder: boolean;
+  /** Gap threshold in meters - gaps larger than this trigger warnings */
+  gapThresholdMeters: number;
+}
+
+export interface RouteGap {
+  /** Index of the route segment before the gap */
+  afterSegmentIndex: number;
+  /** Distance of the gap in meters */
+  distanceMeters: number;
+  /** End point of the previous segment */
+  fromPoint: { lat: number; lon: number };
+  /** Start point of the next segment */
+  toPoint: { lat: number; lon: number };
 }
 
 export interface CombineResult {
@@ -59,6 +73,12 @@ export interface CombineResult {
   pointCount: number;
   waypointCount: number;
   fileCount: number;
+  /** Detected gaps between route segments */
+  gaps: RouteGap[];
+  /** Whether routes were reordered from input order */
+  wasReordered: boolean;
+  /** Order of segments after processing (indices into original input) */
+  segmentOrder: number[];
 }
 
 // CSV Processor Types
