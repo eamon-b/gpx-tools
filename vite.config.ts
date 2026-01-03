@@ -1,6 +1,6 @@
 import { defineConfig } from 'vite';
 import { resolve } from 'path';
-import { readdirSync, existsSync, statSync } from 'fs';
+import { readdirSync, existsSync, statSync, readFileSync } from 'fs';
 
 // Dynamically find all trail page directories
 function getTrailInputs(): Record<string, string> {
@@ -26,6 +26,36 @@ function getTrailInputs(): Record<string, string> {
 export default defineConfig({
   root: 'src/web',
   base: './',
+  server: {
+    fs: {
+      // Allow serving files from the data directory
+      allow: ['../..'],
+    },
+  },
+  plugins: [
+    {
+      name: 'serve-data-directory',
+      configureServer(server) {
+        // Serve /data/* from the project root data/ directory in dev
+        server.middlewares.use('/data', (req, res, next) => {
+          const filePath = resolve(__dirname, 'data', (req.url || '').replace(/^\//, ''));
+          if (existsSync(filePath) && statSync(filePath).isFile()) {
+            const content = readFileSync(filePath);
+            const ext = filePath.split('.').pop();
+            const mimeTypes: Record<string, string> = {
+              json: 'application/json',
+              gpx: 'application/gpx+xml',
+              csv: 'text/csv',
+            };
+            res.setHeader('Content-Type', mimeTypes[ext || ''] || 'application/octet-stream');
+            res.end(content);
+          } else {
+            next();
+          }
+        });
+      },
+    },
+  ],
   build: {
     outDir: '../../dist',
     emptyOutDir: true,

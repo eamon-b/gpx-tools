@@ -11,6 +11,10 @@
     {
       "src": "dist/**",
       "use": "@vercel/static"
+    },
+    {
+      "src": "data/generated/**",
+      "use": "@vercel/static"
     }
   ],
   "routes": [
@@ -24,7 +28,7 @@
     },
     {
       "src": "/data/(.*)",
-      "dest": "/dist/data/$1",
+      "dest": "/data/$1",
       "headers": { "Cache-Control": "public, max-age=86400" }
     },
     {
