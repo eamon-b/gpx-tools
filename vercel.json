@@ -1,46 +1,31 @@
 {
+  "installCommand": "npm install",
+  "devCommand": "npm run dev",
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
   "framework": null,
-  "builds": [
-    {
-      "src": "src/api/*.ts",
-      "use": "@vercel/node",
-      "config": { "maxDuration": 30 }
-    },
-    {
-      "src": "dist/**",
-      "use": "@vercel/static"
-    },
-    {
-      "src": "data/generated/**",
-      "use": "@vercel/static"
+  "functions": {
+    "api/*.ts": {
+      "maxDuration": 30
     }
+  },
+  "rewrites": [
+    { "source": "/api/:path*", "destination": "/api/:path*" },
+    { "source": "/data/:path*", "destination": "/data/:path*" }
   ],
-  "routes": [
+  "headers": [
     {
-      "src": "/api/(.*)",
-      "dest": "/src/api/$1.ts",
-      "headers": {
-        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type"
-      }
+      "source": "/api/(.*)",
+      "headers": [
+        { "key": "Access-Control-Allow-Methods", "value": "GET, POST, OPTIONS" },
+        { "key": "Access-Control-Allow-Headers", "value": "Content-Type" }
+      ]
     },
     {
-      "src": "/data/(.*)",
-      "dest": "/data/$1",
-      "headers": { "Cache-Control": "public, max-age=86400" }
-    },
-    {
-      "handle": "filesystem"
-    },
-    {
-      "src": "^/$",
-      "dest": "/dist/index.html"
-    },
-    {
-      "src": "/(.*)",
-      "dest": "/dist/$1"
+      "source": "/data/(.*)",
+      "headers": [
+        { "key": "Cache-Control", "value": "public, max-age=86400" }
+      ]
     }
   ]
 }
