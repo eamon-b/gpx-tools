@@ -4,7 +4,7 @@ dist/
 .DS_Store
 
 # Generated trail data (built from source)
-data/generated/
+public/data/generated/
 
 # Environment files
 .env

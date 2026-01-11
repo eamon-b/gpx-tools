@@ -150,7 +150,7 @@ const SCRIPTS_DIR = path.dirname(
 );
 const PROJECT_ROOT = path.resolve(SCRIPTS_DIR, '..');
 const DATA_DIR = path.join(PROJECT_ROOT, 'data/trails');
-const OUTPUT_DIR = path.join(PROJECT_ROOT, 'data/generated');
+const OUTPUT_DIR = path.join(PROJECT_ROOT, 'public/data/generated');
 const TRAIL_PAGES_DIR = path.join(PROJECT_ROOT, 'src/web/trails');
 const TRAIL_TEMPLATE_PATH = path.join(TRAIL_PAGES_DIR, 'trail-template.html');
 
