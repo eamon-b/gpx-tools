@@ -469,6 +469,11 @@ footer {
   max-width: 960px;
 }
 
+/* Trail data page - wider to fit waypoints table */
+.container.trail-data {
+  max-width: 1200px;
+}
+
 .hero {
   text-align: center;
   padding: 2rem 0 3rem;

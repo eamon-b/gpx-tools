@@ -150,6 +150,57 @@ describe('findWaypointVisits', () => {
     expect(visits[1].waypoint.name).toBe('Second');
     expect(visits[2].waypoint.name).toBe('Third');
   });
+
+  it('should prevent flickering when track oscillates around threshold boundary', () => {
+    // Create a track that oscillates around the threshold boundary
+    // This simulates GPS noise or track geometry that causes distance to flicker
+    // Track goes: 150m -> 250m -> 180m -> 500m -> 700m from waypoint
+    // Without hysteresis, this would create 2 visits (enter/exit twice)
+    // With hysteresis (exit at 3x = 600m), should only create 1 visit
+    const trackPoints: GpxPoint[] = [
+      { lat: 0, lon: 0, ele: 100, time: null },           // Far from waypoint
+      { lat: 0, lon: 0.00135, ele: 100, time: null },     // ~150m from waypoint (enters at 200m threshold)
+      { lat: 0, lon: 0.00225, ele: 100, time: null },     // ~250m from waypoint (outside entry, inside exit at 600m)
+      { lat: 0, lon: 0.00162, ele: 100, time: null },     // ~180m from waypoint (back inside entry)
+      { lat: 0, lon: 0.0045, ele: 100, time: null },      // ~500m from waypoint (outside entry, inside exit)
+      { lat: 0, lon: 0.006, ele: 100, time: null },       // ~700m from waypoint (outside exit threshold at 600m)
+      { lat: 0, lon: 0.01, ele: 100, time: null },        // Far from waypoint
+    ];
+
+    // Waypoint at a fixed position
+    const waypoints: GpxWaypoint[] = [
+      { lat: 0, lon: 0.0015, ele: 100, name: 'TestPoint', desc: '' },
+    ];
+
+    const visits = findWaypointVisits(waypoints, trackPoints, 200); // 200m threshold
+
+    // Should only have ONE visit due to hysteresis preventing flickering
+    expect(visits).toHaveLength(1);
+    expect(visits[0].waypoint.name).toBe('TestPoint');
+  });
+
+  it('should still detect legitimate multiple passes with hysteresis', () => {
+    // Create a track that clearly exits far beyond the hysteresis zone (600m for 200m entry)
+    // then comes back - this is a legitimate two-pass scenario
+    const trackPoints: GpxPoint[] = [
+      { lat: 0, lon: 0, ele: 100, time: null },           // Start far
+      { lat: 0, lon: 0.0015, ele: 100, time: null },      // Pass waypoint (at waypoint)
+      { lat: 0, lon: 0.008, ele: 100, time: null },       // Go far away (~720m from waypoint, past 600m exit)
+      { lat: 0, lon: 0.0015, ele: 100, time: null },      // Come back to waypoint
+      { lat: 0, lon: 0, ele: 100, time: null },           // End far
+    ];
+
+    const waypoints: GpxWaypoint[] = [
+      { lat: 0, lon: 0.0015, ele: 100, name: 'TestPoint', desc: '' },
+    ];
+
+    const visits = findWaypointVisits(waypoints, trackPoints, 200); // 200m threshold
+
+    // Should have TWO visits - the track clearly leaves and returns
+    expect(visits).toHaveLength(2);
+    expect(visits[0].waypoint.name).toBe('TestPoint');
+    expect(visits[1].waypoint.name).toBe('TestPoint');
+  });
 });
 
 describe('calculateSegmentStats', () => {

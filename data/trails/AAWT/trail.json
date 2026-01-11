@@ -1,0 +1,11 @@
+{
+  "id": "aawt",
+  "name": "AAWT 2025",
+  "shortName": "AAWT",
+  "region": "Unknown",
+  "lengthKm": 688.3,
+  "difficulty": "unknown",
+  "bestMonths": [],
+  "gpxFile": "AAWT_2025.gpx",
+  "description": "Trail data auto-generated from AAWT_2025.gpx. Edit trail.json to customize."
+}

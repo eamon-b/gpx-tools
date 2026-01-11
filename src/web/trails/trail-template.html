@@ -58,6 +58,73 @@
       width: 100%;
       height: 100%;
     }
+    .waypoints-table-wrapper {
+      overflow-x: auto;
+      margin: 1rem 0;
+    }
+    .waypoints-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.875rem;
+    }
+    .waypoints-table th,
+    .waypoints-table td {
+      padding: 0.5rem 0.75rem;
+      text-align: left;
+      border-bottom: 1px solid var(--border-color, #ddd);
+    }
+    .waypoints-table th {
+      background: var(--bg-secondary, #f5f5f5);
+      font-weight: 600;
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      white-space: nowrap;
+    }
+    .waypoints-table td.numeric {
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+    }
+    .waypoints-table tr:hover {
+      background: var(--bg-secondary, #f5f5f5);
+    }
+    .waypoints-table tr.highlight-town {
+      background: #fff3e0;
+    }
+    .waypoints-table tr.highlight-town:hover {
+      background: #ffe0b2;
+    }
+    .waypoints-table tr.highlight-resupply {
+      background: #e8f5e9;
+    }
+    .waypoints-table tr.highlight-resupply:hover {
+      background: #c8e6c9;
+    }
+    .waypoint-type {
+      font-size: 0.7rem;
+      padding: 0.2rem 0.4rem;
+      border-radius: 3px;
+      background: var(--accent-light, #e3f2fd);
+      white-space: nowrap;
+    }
+    .waypoint-type.type-town {
+      background: #ffcc80;
+    }
+    .waypoint-type.type-hut {
+      background: #b39ddb;
+    }
+    .waypoint-type.type-campsite {
+      background: #a5d6a7;
+    }
+    .waypoint-type.type-water {
+      background: #81d4fa;
+    }
+    .waypoint-type.type-water-tank {
+      background: #80cbc4;
+    }
+    .waypoint-type.type-mountain {
+      background: #bcaaa4;
+    }
     .waypoints-list {
       list-style: none;
       padding: 0;
@@ -71,12 +138,6 @@
     }
     .waypoints-list li:last-child {
       border-bottom: none;
-    }
-    .waypoint-type {
-      font-size: 0.75rem;
-      padding: 0.25rem 0.5rem;
-      border-radius: 4px;
-      background: var(--accent-light, #e3f2fd);
     }
     .poi-section {
       margin-top: 2rem;
@@ -95,10 +156,84 @@
       opacity: 0.7;
       font-weight: normal;
     }
+    /* Inline variant rows in waypoints table */
+    .variant-row {
+      background: var(--bg-secondary, #f8f9fa);
+    }
+    .variant-row.type-alternate {
+      background: #fff8e1;
+      border-left: 3px solid #ff9800;
+    }
+    .variant-row.type-side-trip {
+      background: #fce4ec;
+      border-left: 3px solid #9c27b0;
+    }
+    .variant-marker {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .variant-icon {
+      font-size: 1.1rem;
+    }
+    .variant-action {
+      font-size: 0.8rem;
+      opacity: 0.7;
+      margin-left: 0.25rem;
+    }
+    .variant-inline-stats {
+      font-size: 0.85rem;
+      color: var(--text-secondary, #666);
+    }
+    .variant-stats-cell {
+      text-align: left !important;
+    }
+    .variant-type-badge {
+      display: inline-block;
+      font-size: 0.65rem;
+      padding: 0.15rem 0.4rem;
+      border-radius: 3px;
+      text-transform: uppercase;
+      font-weight: 600;
+    }
+    .variant-type-badge.type-alternate {
+      background: #fff3e0;
+      color: #e65100;
+    }
+    .variant-type-badge.type-side-trip {
+      background: #f3e5f5;
+      color: #7b1fa2;
+    }
+    .section-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 0.5rem;
+    }
+    .section-header h3 {
+      margin: 0;
+    }
+    .export-btn {
+      padding: 0.5rem 1rem;
+      background: var(--accent-color, #2196F3);
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 0.875rem;
+      transition: background 0.2s;
+    }
+    .export-btn:hover:not(:disabled) {
+      background: var(--accent-hover, #1976D2);
+    }
+    .export-btn:disabled {
+      background: #ccc;
+      cursor: not-allowed;
+    }
   </style>
 </head>
 <body>
-  <div class="container">
+  <div class="container trail-data">
     <header>
       <nav class="breadcrumb">
         <a href="../../">Home</a> / <a href="../">Trails</a> / <span>{{TRAIL_SHORT_NAME}}</span>
@@ -148,10 +283,13 @@
         <canvas id="elevation-canvas"></canvas>
       </div>
 
-      <h3>Waypoints</h3>
-      <ul class="waypoints-list" id="waypoints-list">
-        <li>Loading waypoints...</li>
-      </ul>
+      <div class="section-header">
+        <h3>Waypoints</h3>
+        <button id="export-btn" class="export-btn" disabled>Export CSV</button>
+      </div>
+      <div class="waypoints-table-wrapper" id="waypoints-container">
+        <p>Loading waypoints...</p>
+      </div>
 
       <div class="poi-section" id="poi-section" hidden>
         <h3>Points of Interest</h3>
@@ -254,20 +392,236 @@
       ctx.fillText(`${maxDist.toFixed(0)} km`, padding.left + width, padding.top + height + 20);
     }
 
-    function renderWaypoints(waypoints) {
-      const list = document.getElementById('waypoints-list');
+    function renderWaypoints(waypoints, alternates, sideTrips) {
+      const container = document.getElementById('waypoints-container');
 
       if (!waypoints || waypoints.length === 0) {
-        list.innerHTML = '<li>No waypoints defined</li>';
+        container.innerHTML = '<p>No waypoints defined</p>';
         return;
       }
 
-      list.innerHTML = waypoints.map(wp => `
-        <li>
-          <span>${wp.name || 'Unnamed'}</span>
-          <span class="waypoint-type">${wp.type || 'waypoint'}</span>
-        </li>
-      `).join('');
+      // Resupply keywords to detect resupply points
+      const resupplyKeywords = ['grocer', 'market', 'foodland', 'iga', 'wool', 'coles', 'general', 'servo'];
+
+      function isResupply(wp) {
+        const text = ((wp.name || '') + ' ' + (wp.description || '')).toLowerCase();
+        return resupplyKeywords.some(kw => text.includes(kw));
+      }
+
+      function getRowClass(wp) {
+        if (wp.type === 'town') return 'highlight-town';
+        if (isResupply(wp)) return 'highlight-resupply';
+        return '';
+      }
+
+      function getTypeClass(type) {
+        const typeMap = {
+          'town': 'type-town',
+          'hut': 'type-hut',
+          'campsite': 'type-campsite',
+          'water': 'type-water',
+          'water-tank': 'type-water-tank',
+          'mountain': 'type-mountain'
+        };
+        return typeMap[type] || '';
+      }
+
+      // Build a combined list of waypoints and variant markers, sorted by distance
+      const allVariants = [...(alternates || []), ...(sideTrips || [])];
+      const tableRows = [];
+
+      // Add waypoints
+      for (const wp of waypoints) {
+        tableRows.push({
+          rowType: 'waypoint',
+          distance: wp.totalDistance ?? 0,
+          data: wp
+        });
+      }
+
+      // Add variant start/end markers
+      for (const variant of allVariants) {
+        if (variant.startDistance != null) {
+          tableRows.push({
+            rowType: 'variant-start',
+            distance: variant.startDistance,
+            data: variant
+          });
+        }
+        // For alternates, add rejoin marker
+        if (variant.type === 'alternate' && variant.endDistance != null) {
+          tableRows.push({
+            rowType: 'variant-end',
+            distance: variant.endDistance,
+            data: variant
+          });
+        }
+      }
+
+      // Sort by distance along route
+      tableRows.sort((a, b) => a.distance - b.distance);
+
+      function renderWaypointRow(wp) {
+        return `
+          <tr class="${getRowClass(wp)}">
+            <td>${wp.name || 'Unnamed'}</td>
+            <td><span class="waypoint-type ${getTypeClass(wp.type)}">${wp.type || 'waypoint'}</span></td>
+            <td class="numeric">${wp.elevation ?? '-'}</td>
+            <td class="numeric">${wp.distance?.toFixed(1) ?? '-'}</td>
+            <td class="numeric">${wp.totalDistance?.toFixed(1) ?? '-'}</td>
+            <td class="numeric">${wp.ascent ?? '-'}</td>
+            <td class="numeric">${wp.descent ?? '-'}</td>
+            <td class="numeric">${wp.totalAscent ?? '-'}</td>
+            <td class="numeric">${wp.totalDescent ?? '-'}</td>
+          </tr>
+        `;
+      }
+
+      function renderVariantRow(variant, isStart) {
+        const typeClass = variant.type === 'alternate' ? 'type-alternate' : 'type-side-trip';
+        const typeLabel = variant.type === 'alternate' ? 'Alternate' : 'Side Trip';
+        const actionLabel = isStart
+          ? (variant.type === 'alternate' ? 'branches' : 'starts')
+          : 'rejoins';
+        const distance = isStart ? variant.startDistance : variant.endDistance;
+
+        return `
+          <tr class="variant-row ${typeClass}">
+            <td colspan="2">
+              <span class="variant-marker ${typeClass}">
+                <span class="variant-icon">${isStart ? '↗' : '↘'}</span>
+                <strong>${variant.name}</strong>
+                <span class="variant-action">${actionLabel} here</span>
+              </span>
+            </td>
+            <td colspan="3" class="variant-stats-cell">
+              <span class="variant-inline-stats">
+                ${variant.distance} km · +${variant.elevation?.ascent || 0}m / -${variant.elevation?.descent || 0}m
+              </span>
+            </td>
+            <td class="numeric">${distance?.toFixed(1) ?? '-'}</td>
+            <td colspan="3">
+              <span class="variant-type-badge ${typeClass}">${typeLabel}</span>
+            </td>
+          </tr>
+        `;
+      }
+
+      const tableHtml = `
+        <table class="waypoints-table">
+          <thead>
+            <tr>
+              <th>Location</th>
+              <th>Type</th>
+              <th>Elev (m)</th>
+              <th>Dist (km)</th>
+              <th>Total (km)</th>
+              <th>Gain (m)</th>
+              <th>Loss (m)</th>
+              <th>Total Gain</th>
+              <th>Total Loss</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${tableRows.map(row => {
+              if (row.rowType === 'waypoint') {
+                return renderWaypointRow(row.data);
+              } else if (row.rowType === 'variant-start') {
+                return renderVariantRow(row.data, true);
+              } else {
+                return renderVariantRow(row.data, false);
+              }
+            }).join('')}
+          </tbody>
+        </table>
+      `;
+
+      container.innerHTML = tableHtml;
+    }
+
+    function exportDatasheet(trail) {
+      const { config, track, waypoints, alternates, sideTrips } = trail;
+
+      // Build CSV content
+      const lines = [];
+
+      // Header with trail info
+      lines.push(`# ${config.name} - Trail Datasheet`);
+      lines.push(`# Region: ${config.region}`);
+      lines.push(`# Total Distance: ${track.totalDistance.toFixed(1)} km`);
+      lines.push(`# Total Ascent: ${Math.round(track.totalAscent)} m`);
+      lines.push(`# Total Descent: ${Math.round(track.totalDescent)} m`);
+      lines.push(`# Generated: ${new Date().toISOString().split('T')[0]}`);
+      lines.push('');
+
+      // Waypoints table header
+      lines.push('Location,Type,Elevation (m),Distance (km),Total (km),Gain (m),Loss (m),Total Gain (m),Total Loss (m),Notes');
+
+      // Add waypoints
+      for (const wp of waypoints || []) {
+        const row = [
+          `"${(wp.name || 'Unnamed').replace(/"/g, '""')}"`,
+          wp.type || 'waypoint',
+          wp.elevation ?? '',
+          wp.distance?.toFixed(1) ?? '',
+          wp.totalDistance?.toFixed(1) ?? '',
+          wp.ascent ?? '',
+          wp.descent ?? '',
+          wp.totalAscent ?? '',
+          wp.totalDescent ?? '',
+          `"${(wp.description || '').replace(/"/g, '""')}"`
+        ];
+        lines.push(row.join(','));
+      }
+
+      // Add alternates section if present
+      if (alternates && alternates.length > 0) {
+        lines.push('');
+        lines.push('# Alternate Routes');
+        lines.push('Name,Type,Distance (km),Ascent (m),Descent (m),Start Distance (km),End Distance (km)');
+        for (const alt of alternates) {
+          const row = [
+            `"${(alt.name || 'Unnamed').replace(/"/g, '""')}"`,
+            alt.type || 'alternate',
+            alt.distance ?? '',
+            alt.elevation?.ascent ?? '',
+            alt.elevation?.descent ?? '',
+            alt.startDistance?.toFixed(1) ?? '',
+            alt.endDistance?.toFixed(1) ?? ''
+          ];
+          lines.push(row.join(','));
+        }
+      }
+
+      // Add side trips section if present
+      if (sideTrips && sideTrips.length > 0) {
+        lines.push('');
+        lines.push('# Side Trips');
+        lines.push('Name,Type,Distance (km),Ascent (m),Descent (m),Start Distance (km)');
+        for (const trip of sideTrips) {
+          const row = [
+            `"${(trip.name || 'Unnamed').replace(/"/g, '""')}"`,
+            trip.type || 'side-trip',
+            trip.distance ?? '',
+            trip.elevation?.ascent ?? '',
+            trip.elevation?.descent ?? '',
+            trip.startDistance?.toFixed(1) ?? ''
+          ];
+          lines.push(row.join(','));
+        }
+      }
+
+      const csvContent = lines.join('\n');
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${config.id || 'trail'}-datasheet.csv`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
     }
 
     function renderPOIs(pois) {
@@ -317,8 +671,13 @@
 
       updateStats(trail);
       drawElevationProfile(trail.track.points);
-      renderWaypoints(trail.waypoints);
+      renderWaypoints(trail.waypoints, trail.alternates, trail.sideTrips);
       renderPOIs(trail.pois);
+
+      // Enable export button
+      const exportBtn = document.getElementById('export-btn');
+      exportBtn.disabled = false;
+      exportBtn.addEventListener('click', () => exportDatasheet(trail));
 
       // Redraw on resize
       window.addEventListener('resize', () => drawElevationProfile(trail.track.points));

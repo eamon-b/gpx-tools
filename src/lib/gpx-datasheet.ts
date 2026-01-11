@@ -67,6 +67,10 @@ function hasResupplyKeyword(text: string | null | undefined, keywords: string[])
  *
  * For each continuous passage through the threshold zone, we record one visit
  * at the point of closest approach within that passage.
+ *
+ * Uses hysteresis to prevent "flickering" - the exit threshold is larger than
+ * the entry threshold, so the track must move significantly away before a new
+ * visit can be recorded for the same waypoint.
  */
 export function findWaypointVisits(
   waypoints: GpxWaypoint[],
@@ -78,6 +82,11 @@ export function findWaypointVisits(
   }
 
   const visits: WaypointVisit[] = [];
+
+  // Hysteresis: exit threshold is 200% larger (3x) than entry threshold
+  // This prevents flickering when the track oscillates around the threshold boundary
+  // E.g., with 200m entry threshold, must exit past 600m before a new visit can start
+  const exitThreshold = maxDistanceMeters * 3.0;
 
   // Track which waypoints we're currently "inside" (within threshold)
   // Key: waypoint index, Value: { bestDistance, bestTrackIndex }
@@ -91,25 +100,18 @@ export function findWaypointVisits(
       const waypoint = waypoints[wpIdx];
       const distance = waypointToPointDistance(waypoint, trackPoint);
 
-      if (distance <= maxDistanceMeters) {
-        // We're within threshold of this waypoint
-        const existing = activeProximity.get(wpIdx);
+      const existing = activeProximity.get(wpIdx);
 
-        if (existing) {
-          // Already tracking this waypoint, update if this is closer
-          if (distance < existing.bestDistance) {
-            existing.bestDistance = distance;
-            existing.bestTrackIndex = trackIdx;
-          }
-        } else {
-          // Just entered proximity of this waypoint
-          activeProximity.set(wpIdx, { bestDistance: distance, bestTrackIndex: trackIdx });
+      if (existing) {
+        // Already tracking this waypoint
+        if (distance < existing.bestDistance) {
+          // Update if this is closer
+          existing.bestDistance = distance;
+          existing.bestTrackIndex = trackIdx;
         }
-      } else {
-        // We're outside threshold
-        const existing = activeProximity.get(wpIdx);
-        if (existing) {
-          // Just exited proximity - record the visit at the best point
+        // Use exit threshold (with hysteresis) to determine when to record visit
+        if (distance > exitThreshold) {
+          // Exited the hysteresis zone - record the visit at the best point
           visits.push({
             waypoint: waypoints[wpIdx],
             trackIndex: existing.bestTrackIndex,
@@ -117,6 +119,9 @@ export function findWaypointVisits(
           });
           activeProximity.delete(wpIdx);
         }
+      } else if (distance <= maxDistanceMeters) {
+        // Not tracking yet and within entry threshold - start tracking
+        activeProximity.set(wpIdx, { bestDistance: distance, bestTrackIndex: trackIdx });
       }
     }
   }
