@@ -39,7 +39,7 @@
       const noTrails = document.getElementById('no-trails');
 
       try {
-        const response = await fetch('/data/generated/index.json');
+        const response = await fetch('../data/generated/index.json');
         if (!response.ok) {
           throw new Error('Trail index not found');
         }

@@ -308,7 +308,7 @@
 
     async function loadTrailData() {
       try {
-        const response = await fetch(`/data/generated/${TRAIL_ID}.json`);
+        const response = await fetch(`../../data/generated/${TRAIL_ID}.json`);
         if (!response.ok) throw new Error('Trail data not found');
         return await response.json();
       } catch (error) {
