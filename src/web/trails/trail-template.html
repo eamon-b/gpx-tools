@@ -102,6 +102,23 @@
     .waypoints-table tr.highlight-resupply:hover {
       background: #c8e6c9;
     }
+    /* Only waypoint rows are clickable, not variant rows */
+    .waypoints-table tbody tr[data-waypoint-index] {
+      cursor: pointer;
+    }
+    .waypoints-table tbody tr {
+      transition: background 0.3s;
+    }
+    .waypoints-table tr.highlight-selected {
+      background: #bbdefb !important;
+    }
+    .popup-show-in-table {
+      display: inline-block;
+      margin-top: 6px;
+      color: #1976D2;
+      text-decoration: underline;
+      cursor: pointer;
+    }
     .waypoint-type {
       font-size: 0.7rem;
       padding: 0.2rem 0.4rem;
@@ -363,6 +380,7 @@
     let mainRoutePolyline = null;
     let trackPoints = [];
     let maxDistance = 0;
+    let waypointMarkers = [];  // Array of {marker, waypoint, index} for bidirectional navigation
 
     // Waypoint icon configuration (from GPX waypoints)
     const WAYPOINT_ICONS = {
@@ -514,17 +532,21 @@
     }
 
     function drawWaypointMarkers(waypoints) {
+      waypointMarkers = [];  // Reset on each call
       if (!waypoints || waypoints.length === 0) return;
 
-      waypoints.forEach(wp => {
-        L.marker([wp.lat, wp.lon], {
+      waypoints.forEach((wp, index) => {
+        const marker = L.marker([wp.lat, wp.lon], {
           icon: createWaypointIcon(wp.type)
         }).addTo(map).bindPopup(`
           <strong>${escapeHtml(wp.name || 'Waypoint')}</strong><br>
           ${escapeHtml(wp.type || 'waypoint')}<br>
           ${(wp.totalDistance || 0).toFixed(1)} km along trail
           ${wp.elevation ? `<br>${Math.round(wp.elevation)}m elevation` : ''}
+          <br><a href="#" class="popup-show-in-table" data-waypoint-index="${index}">Show in table</a>
         `);
+
+        waypointMarkers.push({ marker, waypoint: wp, index });
       });
     }
 
@@ -598,6 +620,42 @@
       const tooltip = document.querySelector('.elevation-profile .hover-tooltip');
       if (hoverLine) hoverLine.style.display = 'none';
       if (tooltip) tooltip.style.display = 'none';
+    }
+
+    // Table → Map navigation: click table row to pan map and open popup
+    function handleTableRowClick(waypointIndex) {
+      const markerInfo = waypointMarkers[waypointIndex];
+      if (!markerInfo) return;
+
+      // Scroll to the map so user can see it
+      document.getElementById('trail-map')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+      // Pan map to waypoint, keep current zoom or use reasonable default
+      const targetZoom = Math.max(map.getZoom(), 13);
+      map.setView([markerInfo.waypoint.lat, markerInfo.waypoint.lon], targetZoom);
+
+      // Open the popup
+      markerInfo.marker.openPopup();
+
+      // Highlight the clicked row
+      const row = document.getElementById(`waypoint-row-${waypointIndex}`);
+      if (row) {
+        row.classList.add('highlight-selected');
+        setTimeout(() => row.classList.remove('highlight-selected'), 2000);
+      }
+    }
+
+    // Map → Table navigation: click popup link to scroll to table row
+    function scrollToTableRow(waypointIndex) {
+      const row = document.getElementById(`waypoint-row-${waypointIndex}`);
+      if (!row) return;
+
+      // Scroll the row into view smoothly
+      row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+      // Briefly highlight the row
+      row.classList.add('highlight-selected');
+      setTimeout(() => row.classList.remove('highlight-selected'), 2000);
     }
 
     function setupElevationHover() {
@@ -773,14 +831,15 @@
       const allVariants = [...(alternates || []), ...(sideTrips || [])];
       const tableRows = [];
 
-      // Add waypoints
-      for (const wp of waypoints) {
+      // Add waypoints with their original index (for map marker lookup)
+      waypoints.forEach((wp, waypointIndex) => {
         tableRows.push({
           rowType: 'waypoint',
           distance: wp.totalDistance ?? 0,
-          data: wp
+          data: wp,
+          waypointIndex  // Track original index for bidirectional navigation
         });
-      }
+      });
 
       // Add variant start/end markers
       for (const variant of allVariants) {
@@ -804,9 +863,11 @@
       // Sort by distance along route
       tableRows.sort((a, b) => a.distance - b.distance);
 
-      function renderWaypointRow(wp) {
+      function renderWaypointRow(wp, waypointIndex) {
         return `
-          <tr class="${getRowClass(wp)}">
+          <tr class="${getRowClass(wp)}"
+              id="waypoint-row-${waypointIndex}"
+              data-waypoint-index="${waypointIndex}">
             <td>${wp.name || 'Unnamed'}</td>
             <td><span class="waypoint-type ${getTypeClass(wp.type)}">${wp.type || 'waypoint'}</span></td>
             <td class="numeric">${wp.elevation ?? '-'}</td>
@@ -868,7 +929,7 @@
           <tbody>
             ${tableRows.map(row => {
               if (row.rowType === 'waypoint') {
-                return renderWaypointRow(row.data);
+                return renderWaypointRow(row.data, row.waypointIndex);
               } else if (row.rowType === 'variant-start') {
                 return renderVariantRow(row.data, true);
               } else {
@@ -979,6 +1040,24 @@
       drawElevationProfile(trail.track.points);
       setupElevationHover();
       renderWaypoints(trail.waypoints, trail.alternates, trail.sideTrips);
+
+      // Table row clicks → map navigation (only for waypoint rows)
+      document.querySelector('.waypoints-table tbody')?.addEventListener('click', (e) => {
+        const row = e.target.closest('tr[data-waypoint-index]');
+        if (row) {
+          handleTableRowClick(parseInt(row.dataset.waypointIndex, 10));
+        }
+      });
+
+      // Popup link clicks → table navigation
+      // NOTE: Must use document-level delegation because Leaflet renders popups
+      // in .leaflet-popup-pane, not inside #trail-map
+      document.addEventListener('click', (e) => {
+        if (e.target.classList.contains('popup-show-in-table')) {
+          e.preventDefault();
+          scrollToTableRow(parseInt(e.target.dataset.waypointIndex, 10));
+        }
+      });
 
       // Enable export button
       const exportBtn = document.getElementById('export-btn');
