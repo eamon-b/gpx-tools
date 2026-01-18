@@ -1,0 +1,11 @@
+{
+  "id": "hume and hovell",
+  "name": "Hume and Hovell",
+  "shortName": "H&H",
+  "region": "Unknown",
+  "lengthKm": 426,
+  "difficulty": "unknown",
+  "bestMonths": [],
+  "gpxFile": "Hume_and_Hovell.gpx",
+  "description": "Trail data auto-generated from Hume_and_Hovell.gpx. Edit trail.json to customize."
+}
