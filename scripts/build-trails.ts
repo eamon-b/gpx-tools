@@ -3,10 +3,37 @@ import * as path from 'path';
 import Papa from 'papaparse';
 import { JSDOM } from 'jsdom';
 import { haversineDistance as haversineDistanceMeters } from '../src/lib/distance.js';
+import { douglasPeucker } from '../src/lib/gpx-optimizer.js';
 
 /** Calculate haversine distance in km */
 function haversineDistanceKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
   return haversineDistanceMeters(lat1, lon1, lat2, lon2) / 1000;
+}
+
+/**
+ * Calculate an adaptive simplification tolerance based on point count.
+ * Returns tolerance in meters that should result in approximately `targetPoints` points.
+ *
+ * Uses a heuristic based on trail length and point density:
+ * - More points relative to distance = higher tolerance needed
+ * - Starts with a baseline and scales logarithmically
+ */
+function calculateAdaptiveTolerance(
+  points: { lat: number; lon: number }[],
+  targetPoints: number,
+  totalDistanceKm: number
+): number {
+  if (points.length <= targetPoints) return 0;
+
+  // Ratio of how much we need to reduce
+  const reductionRatio = points.length / targetPoints;
+
+  // Base tolerance scales with trail length (longer trails can have larger tolerance)
+  // and reduction ratio (more points to remove = higher tolerance)
+  const baseTolerance = 5; // 5 meters minimum
+  const scaleFactor = Math.log2(reductionRatio) * (1 + totalDistanceKm / 500);
+
+  return baseTolerance + scaleFactor * 5;
 }
 
 interface TrailConfig {
@@ -72,6 +99,7 @@ interface ProcessedTrail {
   config: TrailConfig;
   track: {
     points: { lat: number; lon: number; ele: number; dist: number }[];
+    displayPoints: { lat: number; lon: number; ele: number; dist: number }[];
     totalDistance: number;
     totalAscent: number;
     totalDescent: number;
@@ -753,6 +781,26 @@ async function processTrail(trailDir: string, autoGenConfig: boolean = false): P
     };
   });
 
+  // Simplify for map display (target ~3000 points for smooth rendering)
+  const targetDisplayPoints = 3000;
+  let displayPoints = points;
+
+  if (points.length > targetDisplayPoints) {
+    const tolerance = calculateAdaptiveTolerance(points, targetDisplayPoints, totalDistance);
+    // douglasPeucker expects GpxPoint format with lat, lon, ele
+    const simplified = douglasPeucker(
+      points.map(p => ({ lat: p.lat, lon: p.lon, ele: p.ele, time: null })),
+      tolerance
+    );
+    // Map back to include dist by finding nearest original point
+    displayPoints = simplified.map(sp => {
+      // Find original point with matching lat/lon to preserve dist
+      const original = points.find(p => p.lat === sp.lat && p.lon === sp.lon);
+      return original || { lat: sp.lat, lon: sp.lon, ele: sp.ele, dist: 0 };
+    });
+    console.log(`  ✓ Simplified ${points.length} → ${displayPoints.length} points for display`);
+  }
+
   // Get waypoints - prefer GPX waypoints, fall back to CSV if specified
   let waypoints: Waypoint[] = gpxData.waypoints;
   let alternates: RouteVariant[] = [];
@@ -845,6 +893,7 @@ async function processTrail(trailDir: string, autoGenConfig: boolean = false): P
     config,
     track: {
       points,
+      displayPoints,
       totalDistance,
       totalAscent,
       totalDescent,

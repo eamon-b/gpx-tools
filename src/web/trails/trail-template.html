@@ -5,6 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{{TRAIL_NAME}} - GPX Tools</title>
   <link rel="stylesheet" href="../../styles.css">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script defer src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <style>
     .trail-header {
       margin-bottom: 2rem;
@@ -139,23 +141,6 @@
     .waypoints-list li:last-child {
       border-bottom: none;
     }
-    .poi-section {
-      margin-top: 2rem;
-    }
-    .poi-category {
-      margin-bottom: 1.5rem;
-    }
-    .poi-category h4 {
-      margin-bottom: 0.5rem;
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
-    }
-    .poi-count {
-      font-size: 0.875rem;
-      opacity: 0.7;
-      font-weight: normal;
-    }
     /* Inline variant rows in waypoints table */
     .variant-row {
       background: var(--bg-secondary, #f8f9fa);
@@ -212,6 +197,74 @@
     }
     .section-header h3 {
       margin: 0;
+    }
+    /* Trail map styles */
+    .trail-map {
+      width: 100%;
+      height: 400px;
+      background: var(--bg-secondary, #f5f5f5);
+      border-radius: 8px;
+      margin: 1rem 0 2rem 0;
+      position: relative;
+      z-index: 0;
+    }
+    .elevation-hover-marker {
+      width: 12px;
+      height: 12px;
+      background: #ff5722;
+      border: 2px solid white;
+      border-radius: 50%;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+    }
+    .elevation-profile .hover-line {
+      position: absolute;
+      top: 0;
+      bottom: 30px;
+      width: 2px;
+      background: #ff5722;
+      pointer-events: none;
+      display: none;
+    }
+    .elevation-profile .hover-tooltip {
+      position: absolute;
+      top: 5px;
+      background: rgba(0,0,0,0.8);
+      color: white;
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-size: 12px;
+      pointer-events: none;
+      display: none;
+      white-space: nowrap;
+    }
+    /* Waypoint marker styles */
+    .waypoint-marker {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      font-size: 14px;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.4);
+      border: 2px solid white;
+    }
+    .waypoint-marker.town { background: #ffcc80; }
+    .waypoint-marker.hut { background: #b39ddb; }
+    .waypoint-marker.campsite { background: #a5d6a7; }
+    .waypoint-marker.water { background: #81d4fa; }
+    .waypoint-marker.water-tank { background: #80cbc4; }
+    .waypoint-marker.mountain { background: #bcaaa4; }
+    .waypoint-marker.waypoint { background: #e0e0e0; }
+    @media (max-width: 768px) {
+      .trail-map {
+        height: 300px;
+      }
+    }
+    @media (max-width: 480px) {
+      .trail-map {
+        height: 250px;
+      }
     }
     .export-btn {
       padding: 0.5rem 1rem;
@@ -278,6 +331,9 @@
         </div>
       </div>
 
+      <h3>Trail Map</h3>
+      <div id="trail-map" class="trail-map"></div>
+
       <h3>Elevation Profile</h3>
       <div class="elevation-profile">
         <canvas id="elevation-canvas"></canvas>
@@ -290,11 +346,6 @@
       <div class="waypoints-table-wrapper" id="waypoints-container">
         <p>Loading waypoints...</p>
       </div>
-
-      <div class="poi-section" id="poi-section" hidden>
-        <h3>Points of Interest</h3>
-        <div id="poi-categories"></div>
-      </div>
     </section>
 
     <footer>
@@ -305,6 +356,299 @@
   <script type="module">
     const TRAIL_ID = '{{TRAIL_ID}}';
     const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+    // Map state
+    let map = null;
+    let hoverMarker = null;
+    let mainRoutePolyline = null;
+    let trackPoints = [];
+    let maxDistance = 0;
+
+    // Waypoint icon configuration (from GPX waypoints)
+    const WAYPOINT_ICONS = {
+      town: { icon: '🏘️' },
+      hut: { icon: '🛖' },
+      campsite: { icon: '⛺' },
+      water: { icon: '💧' },
+      'water-tank': { icon: '🚰' },
+      mountain: { icon: '⛰️' },
+      waypoint: { icon: '📍' }
+    };
+
+    // Safe min/max for large arrays (avoids stack overflow with spread operator)
+    function getMinMax(arr) {
+      if (arr.length === 0) return { min: 0, max: 0 };
+      let min = arr[0], max = arr[0];
+      for (let i = 1; i < arr.length; i++) {
+        if (arr[i] < min) min = arr[i];
+        if (arr[i] > max) max = arr[i];
+      }
+      return { min, max };
+    }
+
+    // Debounce helper for resize events
+    function debounce(fn, ms) {
+      let timeout;
+      return (...args) => {
+        clearTimeout(timeout);
+        timeout = setTimeout(() => fn(...args), ms);
+      };
+    }
+
+    // HTML escape helper for XSS prevention
+    function escapeHtml(text) {
+      if (text == null) return '';
+      const div = document.createElement('div');
+      div.textContent = String(text);
+      return div.innerHTML;
+    }
+
+    // Binary search to find nearest point by distance (O(log n) instead of O(n))
+    function findNearestByDistance(points, targetDist) {
+      if (points.length === 0) return 0;
+      let low = 0, high = points.length - 1;
+
+      while (low < high) {
+        const mid = Math.floor((low + high) / 2);
+        if (points[mid].dist < targetDist) {
+          low = mid + 1;
+        } else {
+          high = mid;
+        }
+      }
+
+      // Check neighbors for closest
+      const candidates = [low - 1, low, low + 1].filter(i => i >= 0 && i < points.length);
+      return candidates.reduce((best, i) =>
+        Math.abs(points[i].dist - targetDist) < Math.abs(points[best].dist - targetDist) ? i : best
+      , candidates[0]);
+    }
+
+    function initMap(trail) {
+      map = L.map('trail-map', {
+        zoomControl: true,
+        scrollWheelZoom: true
+      });
+
+      // OpenTopoMap tiles
+      L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
+        maxZoom: 17,
+        attribution: 'Map data: &copy; OpenStreetMap contributors, SRTM | Map style: &copy; OpenTopoMap'
+      }).addTo(map);
+
+      maxDistance = trail.track.totalDistance;
+
+      drawMainRoute(trail);
+      drawAlternates(trail.alternates || []);
+      drawSideTrips(trail.sideTrips || []);
+      drawWaypointMarkers(trail.waypoints || []);
+
+      // Create hover marker (initially not on map)
+      hoverMarker = L.marker([0, 0], {
+        icon: L.divIcon({
+          className: 'elevation-hover-marker',
+          iconSize: [12, 12],
+          iconAnchor: [6, 6]
+        })
+      });
+
+      fitMapToBounds(trail);
+    }
+
+    function drawMainRoute(trail) {
+      // Use pre-simplified displayPoints for map rendering (faster)
+      const displayPoints = trail.track.displayPoints || trail.track.points;
+      if (!displayPoints || displayPoints.length === 0) return;
+
+      const latLngs = displayPoints.map(p => [p.lat, p.lon]);
+
+      mainRoutePolyline = L.polyline(latLngs, {
+        color: '#2196F3',
+        weight: 3,
+        opacity: 0.9
+      }).addTo(map);
+
+      // Keep full points for hover sync (accurate distance lookup)
+      trackPoints = trail.track.points;
+
+      // Hover sync from map to chart
+      mainRoutePolyline.on('mousemove', handleMapHover);
+      mainRoutePolyline.on('mouseout', hideElevationHover);
+    }
+
+    function drawAlternates(alternates) {
+      alternates.forEach(alt => {
+        if (!alt.points || alt.points.length === 0) return;
+
+        const latLngs = alt.points.map(p => [p.lat, p.lon]);
+        L.polyline(latLngs, {
+          color: '#ff9800',
+          weight: 3,
+          opacity: 0.8
+        }).addTo(map).bindPopup(`<strong>${escapeHtml(alt.name)}</strong><br>${escapeHtml(alt.distance)} km`);
+      });
+    }
+
+    function drawSideTrips(sideTrips) {
+      sideTrips.forEach(trip => {
+        if (!trip.points || trip.points.length === 0) return;
+
+        const latLngs = trip.points.map(p => [p.lat, p.lon]);
+        L.polyline(latLngs, {
+          color: '#9c27b0',
+          weight: 3,
+          opacity: 0.8
+        }).addTo(map).bindPopup(`<strong>${escapeHtml(trip.name)}</strong><br>${escapeHtml(trip.distance)} km`);
+      });
+    }
+
+    function createWaypointIcon(type) {
+      const config = WAYPOINT_ICONS[type] || WAYPOINT_ICONS.waypoint;
+      return L.divIcon({
+        className: `waypoint-marker ${type || 'waypoint'}`,
+        html: config.icon,
+        iconSize: [24, 24],
+        iconAnchor: [12, 12],
+        popupAnchor: [0, -12]
+      });
+    }
+
+    function drawWaypointMarkers(waypoints) {
+      if (!waypoints || waypoints.length === 0) return;
+
+      waypoints.forEach(wp => {
+        L.marker([wp.lat, wp.lon], {
+          icon: createWaypointIcon(wp.type)
+        }).addTo(map).bindPopup(`
+          <strong>${escapeHtml(wp.name || 'Waypoint')}</strong><br>
+          ${escapeHtml(wp.type || 'waypoint')}<br>
+          ${(wp.totalDistance || 0).toFixed(1)} km along trail
+          ${wp.elevation ? `<br>${Math.round(wp.elevation)}m elevation` : ''}
+        `);
+      });
+    }
+
+    function fitMapToBounds(trail) {
+      const bounds = L.latLngBounds();
+
+      // Use displayPoints for faster bounds calculation (fewer iterations)
+      const displayPoints = trail.track.displayPoints || trail.track.points;
+      displayPoints.forEach(p => bounds.extend([p.lat, p.lon]));
+
+      (trail.alternates || []).forEach(alt => {
+        (alt.points || []).forEach(p => bounds.extend([p.lat, p.lon]));
+      });
+
+      (trail.sideTrips || []).forEach(trip => {
+        (trip.points || []).forEach(p => bounds.extend([p.lat, p.lon]));
+      });
+
+      map.fitBounds(bounds, { padding: [20, 20] });
+    }
+
+    // Bidirectional hover sync
+    function handleMapHover(e) {
+      if (!trackPoints.length) return;
+
+      const latlng = e.latlng;
+      let nearestPoint = null;
+      let minDist = Infinity;
+
+      for (const p of trackPoints) {
+        const dist = Math.sqrt(
+          Math.pow(p.lat - latlng.lat, 2) +
+          Math.pow(p.lon - latlng.lng, 2)
+        );
+        if (dist < minDist) {
+          minDist = dist;
+          nearestPoint = p;
+        }
+      }
+
+      if (nearestPoint) {
+        showElevationHover(nearestPoint.dist, nearestPoint.ele);
+      }
+    }
+
+    function showElevationHover(distance, elevation) {
+      const canvas = document.getElementById('elevation-canvas');
+      const rect = canvas.getBoundingClientRect();
+      const padding = { top: 20, right: 20, bottom: 30, left: 50 };
+      const width = rect.width - padding.left - padding.right;
+
+      const xPos = padding.left + (distance / maxDistance) * width;
+
+      const hoverLine = document.querySelector('.elevation-profile .hover-line');
+      const tooltip = document.querySelector('.elevation-profile .hover-tooltip');
+
+      if (hoverLine) {
+        hoverLine.style.left = `${xPos}px`;
+        hoverLine.style.display = 'block';
+      }
+
+      if (tooltip) {
+        tooltip.style.left = `${xPos + 10}px`;
+        tooltip.textContent = `${distance.toFixed(1)} km, ${Math.round(elevation)}m`;
+        tooltip.style.display = 'block';
+      }
+    }
+
+    function hideElevationHover() {
+      const hoverLine = document.querySelector('.elevation-profile .hover-line');
+      const tooltip = document.querySelector('.elevation-profile .hover-tooltip');
+      if (hoverLine) hoverLine.style.display = 'none';
+      if (tooltip) tooltip.style.display = 'none';
+    }
+
+    function setupElevationHover() {
+      const canvas = document.getElementById('elevation-canvas');
+      const profileDiv = document.querySelector('.elevation-profile');
+
+      // Add hover line and tooltip elements
+      const hoverLine = document.createElement('div');
+      hoverLine.className = 'hover-line';
+      profileDiv.appendChild(hoverLine);
+
+      const tooltip = document.createElement('div');
+      tooltip.className = 'hover-tooltip';
+      profileDiv.appendChild(tooltip);
+
+      canvas.addEventListener('mousemove', (e) => {
+        if (!trackPoints.length || !map) return;
+
+        const rect = canvas.getBoundingClientRect();
+        const padding = { top: 20, right: 20, bottom: 30, left: 50 };
+        const width = rect.width - padding.left - padding.right;
+
+        const x = e.clientX - rect.left - padding.left;
+        if (x < 0 || x > width) {
+          hideElevationHover();
+          if (map.hasLayer(hoverMarker)) map.removeLayer(hoverMarker);
+          return;
+        }
+
+        const distance = (x / width) * maxDistance;
+
+        // Binary search for nearest point by distance (O(log n))
+        const nearestIndex = findNearestByDistance(trackPoints, distance);
+        const nearestPoint = trackPoints[nearestIndex];
+
+        if (nearestPoint) {
+          hoverMarker.setLatLng([nearestPoint.lat, nearestPoint.lon]);
+          if (!map.hasLayer(hoverMarker)) {
+            hoverMarker.addTo(map);
+          }
+          showElevationHover(nearestPoint.dist, nearestPoint.ele);
+        }
+      });
+
+      canvas.addEventListener('mouseleave', () => {
+        if (map && map.hasLayer(hoverMarker)) {
+          map.removeLayer(hoverMarker);
+        }
+        hideElevationHover();
+      });
+    }
 
     async function loadTrailData() {
       try {
@@ -337,9 +681,8 @@
 
       const elevations = points.map(p => p.ele);
       const distances = points.map(p => p.dist);
-      const minEle = Math.min(...elevations);
-      const maxEle = Math.max(...elevations);
-      const maxDist = Math.max(...distances);
+      const { min: minEle, max: maxEle } = getMinMax(elevations);
+      const { max: maxDist } = getMinMax(distances);
 
       const padding = { top: 20, right: 20, bottom: 30, left: 50 };
       const width = rect.width - padding.left - padding.right;
@@ -624,44 +967,6 @@
       URL.revokeObjectURL(url);
     }
 
-    function renderPOIs(pois) {
-      if (!pois || pois.length === 0) return;
-
-      const section = document.getElementById('poi-section');
-      const container = document.getElementById('poi-categories');
-      section.removeAttribute('hidden');
-
-      // Group by category
-      const grouped = {};
-      for (const poi of pois) {
-        if (!grouped[poi.category]) grouped[poi.category] = [];
-        grouped[poi.category].push(poi);
-      }
-
-      const categoryLabels = {
-        water: 'Water Sources',
-        camping: 'Camping',
-        resupply: 'Resupply',
-        transport: 'Transport',
-        emergency: 'Emergency'
-      };
-
-      container.innerHTML = Object.entries(grouped).map(([category, items]) => `
-        <div class="poi-category">
-          <h4>${categoryLabels[category] || category} <span class="poi-count">(${items.length})</span></h4>
-          <ul class="waypoints-list">
-            ${items.slice(0, 10).map(poi => `
-              <li>
-                <span>${poi.name || poi.tags?.amenity || poi.tags?.tourism || 'Unnamed'}</span>
-                <span class="waypoint-type">${(poi.distanceAlongTrail || 0).toFixed(1)} km</span>
-              </li>
-            `).join('')}
-            ${items.length > 10 ? `<li><em>...and ${items.length - 10} more</em></li>` : ''}
-          </ul>
-        </div>
-      `).join('');
-    }
-
     async function init() {
       const trail = await loadTrailData();
       if (!trail) {
@@ -670,17 +975,21 @@
       }
 
       updateStats(trail);
+      initMap(trail);
       drawElevationProfile(trail.track.points);
+      setupElevationHover();
       renderWaypoints(trail.waypoints, trail.alternates, trail.sideTrips);
-      renderPOIs(trail.pois);
 
       // Enable export button
       const exportBtn = document.getElementById('export-btn');
       exportBtn.disabled = false;
       exportBtn.addEventListener('click', () => exportDatasheet(trail));
 
-      // Redraw on resize
-      window.addEventListener('resize', () => drawElevationProfile(trail.track.points));
+      // Redraw on resize (debounced to prevent jank)
+      window.addEventListener('resize', debounce(() => {
+        drawElevationProfile(trail.track.points);
+        if (map) map.invalidateSize();
+      }, 150));
     }
 
     init();
