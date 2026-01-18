@@ -90,8 +90,11 @@ function perpendicularDistance(
 }
 
 /**
- * Douglas-Peucker line simplification algorithm
+ * Douglas-Peucker line simplification algorithm (iterative implementation)
  * Reduces number of points while preserving shape within tolerance
+ *
+ * Uses an explicit stack instead of recursion to avoid stack overflow
+ * on very long trails (>50k points).
  *
  * @param points - Array of GPS points to simplify
  * @param tolerance - Maximum perpendicular distance in meters for point removal
@@ -102,32 +105,36 @@ export function douglasPeucker(points: GpxPoint[], tolerance: number): GpxPoint[
     return points;
   }
 
-  // Find point with maximum distance from line between first and last
-  let maxDistance = 0;
-  let maxIndex = 0;
+  // Track which points to keep
+  const keep: boolean[] = new Array(points.length).fill(false);
+  keep[0] = true;
+  keep[points.length - 1] = true;
 
-  const first = points[0];
-  const last = points[points.length - 1];
+  // Use explicit stack instead of recursion to avoid stack overflow
+  const stack: [number, number][] = [[0, points.length - 1]];
 
-  for (let i = 1; i < points.length - 1; i++) {
-    const distance = perpendicularDistance(points[i], first, last);
-    if (distance > maxDistance) {
-      maxDistance = distance;
-      maxIndex = i;
+  while (stack.length > 0) {
+    const [start, end] = stack.pop()!;
+
+    let maxDist = 0;
+    let maxIndex = start;
+
+    for (let i = start + 1; i < end; i++) {
+      const dist = perpendicularDistance(points[i], points[start], points[end]);
+      if (dist > maxDist) {
+        maxDist = dist;
+        maxIndex = i;
+      }
+    }
+
+    if (maxDist > tolerance) {
+      keep[maxIndex] = true;
+      stack.push([start, maxIndex]);
+      stack.push([maxIndex, end]);
     }
   }
 
-  // If max distance exceeds tolerance, recursively simplify
-  if (maxDistance > tolerance) {
-    const left = douglasPeucker(points.slice(0, maxIndex + 1), tolerance);
-    const right = douglasPeucker(points.slice(maxIndex), tolerance);
-
-    // Combine results (avoiding duplicate point at maxIndex)
-    return [...left.slice(0, -1), ...right];
-  }
-
-  // All points within tolerance - keep only endpoints
-  return [first, last];
+  return points.filter((_, i) => keep[i]);
 }
 
 /**
