@@ -10,6 +10,18 @@ function haversineDistanceKm(lat1: number, lon1: number, lat2: number, lon2: num
   return haversineDistanceMeters(lat1, lon1, lat2, lon2) / 1000;
 }
 
+// Simplification tolerance constants (in meters)
+// These were empirically tuned to balance visual fidelity vs rendering performance:
+// - MIN_TOLERANCE_METERS: Minimum perpendicular distance for point removal.
+//   Below 5m, removed points are imperceptible at typical map zoom levels.
+// - DISTANCE_SCALE_FACTOR_KM: Longer trails can tolerate larger tolerances since
+//   users zoom out more. 500km normalizes so a 500km trail gets ~2x base tolerance.
+// - TOLERANCE_MULTIPLIER: Scales the logarithmic reduction factor. Higher values
+//   remove more points but may lose detail on sharp switchbacks.
+const MIN_TOLERANCE_METERS = 5;
+const DISTANCE_SCALE_FACTOR_KM = 500;
+const TOLERANCE_MULTIPLIER = 5;
+
 /**
  * Calculate an adaptive simplification tolerance based on point count.
  * Returns tolerance in meters that should result in approximately `targetPoints` points.
@@ -30,10 +42,16 @@ function calculateAdaptiveTolerance(
 
   // Base tolerance scales with trail length (longer trails can have larger tolerance)
   // and reduction ratio (more points to remove = higher tolerance)
-  const baseTolerance = 5; // 5 meters minimum
-  const scaleFactor = Math.log2(reductionRatio) * (1 + totalDistanceKm / 500);
+  const scaleFactor = Math.log2(reductionRatio) * (1 + totalDistanceKm / DISTANCE_SCALE_FACTOR_KM);
 
-  return baseTolerance + scaleFactor * 5;
+  return MIN_TOLERANCE_METERS + scaleFactor * TOLERANCE_MULTIPLIER;
+}
+
+interface ClimateLocationConfig {
+  name: string;
+  waypointName?: string;
+  lat: number;
+  lon: number;
 }
 
 interface TrailConfig {
@@ -47,6 +65,7 @@ interface TrailConfig {
   gpxFile: string;
   waypointsFile?: string;  // Now optional - can extract from GPX
   climateFile?: string;
+  climateLocations?: ClimateLocationConfig[];
   description?: string;
 }
 
@@ -181,6 +200,7 @@ const DATA_DIR = path.join(PROJECT_ROOT, 'data/trails');
 const OUTPUT_DIR = path.join(PROJECT_ROOT, 'public/data/generated');
 const TRAIL_PAGES_DIR = path.join(PROJECT_ROOT, 'src/web/trails');
 const TRAIL_TEMPLATE_PATH = path.join(TRAIL_PAGES_DIR, 'trail-template.html');
+const CLIMATE_TEMPLATE_PATH = path.join(TRAIL_PAGES_DIR, 'climate-template.html');
 
 const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
@@ -792,10 +812,11 @@ async function processTrail(trailDir: string, autoGenConfig: boolean = false): P
       points.map(p => ({ lat: p.lat, lon: p.lon, ele: p.ele, time: null })),
       tolerance
     );
-    // Map back to include dist by finding nearest original point
+    // Build a Map for O(1) lookup of original points by lat/lon
+    // Douglas-Peucker returns references to original points, so exact equality works
+    const pointMap = new Map(points.map(p => [`${p.lat},${p.lon}`, p]));
     displayPoints = simplified.map(sp => {
-      // Find original point with matching lat/lon to preserve dist
-      const original = points.find(p => p.lat === sp.lat && p.lon === sp.lon);
+      const original = pointMap.get(`${sp.lat},${sp.lon}`);
       return original || { lat: sp.lat, lon: sp.lon, ele: sp.ele, dist: 0 };
     });
     console.log(`  ✓ Simplified ${points.length} → ${displayPoints.length} points for display`);
@@ -942,6 +963,34 @@ function generateTrailPage(trail: ProcessedTrail): void {
   console.log(`  ✓ Generated ${htmlPath}`);
 }
 
+/**
+ * Generate a climate page for a trail from the template
+ */
+function generateClimatePage(trail: ProcessedTrail): void {
+  if (!fs.existsSync(CLIMATE_TEMPLATE_PATH)) {
+    console.log('  Note: Climate template not found, skipping climate page generation');
+    return;
+  }
+
+  const template = fs.readFileSync(CLIMATE_TEMPLATE_PATH, 'utf-8');
+
+  // Replace placeholders
+  const html = template
+    .replace(/\{\{TRAIL_ID\}\}/g, trail.config.id)
+    .replace(/\{\{TRAIL_NAME\}\}/g, trail.config.name)
+    .replace(/\{\{TRAIL_SHORT_NAME\}\}/g, trail.config.shortName || trail.config.name);
+
+  // Create trail directory if it doesn't exist
+  const trailPageDir = path.join(TRAIL_PAGES_DIR, trail.config.id);
+  if (!fs.existsSync(trailPageDir)) {
+    fs.mkdirSync(trailPageDir, { recursive: true });
+  }
+
+  const htmlPath = path.join(trailPageDir, 'climate.html');
+  fs.writeFileSync(htmlPath, html);
+  console.log(`  ✓ Generated ${htmlPath}`);
+}
+
 async function main() {
   console.log('Trail Build Script');
   console.log('==================\n');
@@ -1018,8 +1067,9 @@ async function main() {
       console.log(`    Elevation: +${Math.round(processed.track.totalAscent)}m / -${Math.round(processed.track.totalDescent)}m`);
       console.log(`    Waypoints: ${processed.waypoints.length}`);
 
-      // Generate HTML page for this trail
+      // Generate HTML pages for this trail
       generateTrailPage(processed);
+      generateClimatePage(processed);
 
       trailIndex.push({
         id: processed.config.id,

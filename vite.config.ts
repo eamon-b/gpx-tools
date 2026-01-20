@@ -2,7 +2,7 @@ import { defineConfig } from 'vite';
 import { resolve } from 'path';
 import { readdirSync, existsSync, statSync } from 'fs';
 
-// Dynamically find all trail page directories
+// Dynamically find all trail page directories (index.html and climate.html)
 function getTrailInputs(): Record<string, string> {
   const trailsDir = resolve(__dirname, 'src/web/trails');
   const inputs: Record<string, string> = {};
@@ -13,9 +13,15 @@ function getTrailInputs(): Record<string, string> {
   for (const entry of entries) {
     const entryPath = resolve(trailsDir, entry);
     if (statSync(entryPath).isDirectory()) {
+      // Add index.html if it exists
       const indexPath = resolve(entryPath, 'index.html');
       if (existsSync(indexPath)) {
         inputs[`trail-${entry}`] = indexPath;
+      }
+      // Add climate.html if it exists
+      const climatePath = resolve(entryPath, 'climate.html');
+      if (existsSync(climatePath)) {
+        inputs[`trail-${entry}-climate`] = climatePath;
       }
     }
   }

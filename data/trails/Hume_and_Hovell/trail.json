@@ -1,11 +1,38 @@
 {
-  "id": "hume and hovell",
-  "name": "Hume and Hovell",
+  "id": "hume-and-hovell",
+  "name": "Hume and Hovell Track",
   "shortName": "H&H",
-  "region": "Unknown",
+  "region": "NSW Southern Tablelands",
   "lengthKm": 426,
-  "difficulty": "unknown",
-  "bestMonths": [],
+  "difficulty": "moderate",
+  "bestMonths": [3, 4, 5, 9, 10, 11],
   "gpxFile": "Hume_and_Hovell.gpx",
-  "description": "Trail data auto-generated from Hume_and_Hovell.gpx. Edit trail.json to customize."
+  "description": "Historic walking track following the route of explorers Hamilton Hume and William Hovell from 1824.",
+  "climateLocations": [
+    {
+      "name": "Yass",
+      "lat": -34.84,
+      "lon": 148.91
+    },
+    {
+      "name": "Wee Jasper",
+      "lat": -35.14,
+      "lon": 148.69
+    },
+    {
+      "name": "Tumut",
+      "lat": -35.30,
+      "lon": 148.22
+    },
+    {
+      "name": "Tumbarumba",
+      "lat": -35.78,
+      "lon": 148.01
+    },
+    {
+      "name": "Albury",
+      "lat": -36.08,
+      "lon": 146.92
+    }
+  ]
 }

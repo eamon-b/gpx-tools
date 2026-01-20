@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{{TRAIL_NAME}} - GPX Tools</title>
   <link rel="stylesheet" href="../../styles.css">
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <script defer src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+  <script defer src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
   <style>
     .trail-header {
       margin-bottom: 2rem;
@@ -27,6 +27,14 @@
       font-size: 0.75rem;
       text-transform: uppercase;
       opacity: 0.7;
+    }
+    .trail-nav-link {
+      color: var(--accent-color, #2196F3);
+      text-decoration: none;
+      font-weight: 500;
+    }
+    .trail-nav-link:hover {
+      text-decoration: underline;
     }
     .trail-stats {
       display: grid;
@@ -326,6 +334,9 @@
             <strong>Best Months</strong>
             {{TRAIL_BEST_MONTHS}}
           </div>
+          <div class="trail-meta-item">
+            <a href="climate.html" class="trail-nav-link">Climate Data</a>
+          </div>
         </div>
       </div>
 
@@ -378,7 +389,8 @@
     let map = null;
     let hoverMarker = null;
     let mainRoutePolyline = null;
-    let trackPoints = [];
+    let trackPoints = [];      // Full resolution points for elevation chart hover
+    let displayPoints = [];    // Simplified points for map hover detection (faster)
     let maxDistance = 0;
     let waypointMarkers = [];  // Array of {marker, waypoint, index} for bidirectional navigation
 
@@ -443,39 +455,57 @@
     }
 
     function initMap(trail) {
-      map = L.map('trail-map', {
-        zoomControl: true,
-        scrollWheelZoom: true
-      });
+      // Check if Leaflet loaded successfully
+      if (typeof L === 'undefined') {
+        const mapContainer = document.getElementById('trail-map');
+        if (mapContainer) {
+          mapContainer.innerHTML = '<p style="padding: 2rem; text-align: center; color: #666;">Map unavailable. Please check your internet connection or try disabling ad blockers.</p>';
+        }
+        console.error('Leaflet library failed to load');
+        return;
+      }
 
-      // OpenTopoMap tiles
-      L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
-        maxZoom: 17,
-        attribution: 'Map data: &copy; OpenStreetMap contributors, SRTM | Map style: &copy; OpenTopoMap'
-      }).addTo(map);
+      try {
+        map = L.map('trail-map', {
+          zoomControl: true,
+          scrollWheelZoom: true
+        });
 
-      maxDistance = trail.track.totalDistance;
+        // OpenTopoMap tiles
+        L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
+          maxZoom: 17,
+          attribution: 'Map data: &copy; OpenStreetMap contributors, SRTM | Map style: &copy; OpenTopoMap'
+        }).addTo(map);
 
-      drawMainRoute(trail);
-      drawAlternates(trail.alternates || []);
-      drawSideTrips(trail.sideTrips || []);
-      drawWaypointMarkers(trail.waypoints || []);
+        maxDistance = trail.track.totalDistance;
 
-      // Create hover marker (initially not on map)
-      hoverMarker = L.marker([0, 0], {
-        icon: L.divIcon({
-          className: 'elevation-hover-marker',
-          iconSize: [12, 12],
-          iconAnchor: [6, 6]
-        })
-      });
+        drawMainRoute(trail);
+        drawAlternates(trail.alternates || []);
+        drawSideTrips(trail.sideTrips || []);
+        drawWaypointMarkers(trail.waypoints || []);
 
-      fitMapToBounds(trail);
+        // Create hover marker (initially not on map)
+        hoverMarker = L.marker([0, 0], {
+          icon: L.divIcon({
+            className: 'elevation-hover-marker',
+            iconSize: [12, 12],
+            iconAnchor: [6, 6]
+          })
+        });
+
+        fitMapToBounds(trail);
+      } catch (error) {
+        console.error('Failed to initialize map:', error);
+        const mapContainer = document.getElementById('trail-map');
+        if (mapContainer) {
+          mapContainer.innerHTML = '<p style="padding: 2rem; text-align: center; color: #666;">Failed to load map. Please try refreshing the page.</p>';
+        }
+      }
     }
 
     function drawMainRoute(trail) {
       // Use pre-simplified displayPoints for map rendering (faster)
-      const displayPoints = trail.track.displayPoints || trail.track.points;
+      displayPoints = trail.track.displayPoints || trail.track.points;
       if (!displayPoints || displayPoints.length === 0) return;
 
       const latLngs = displayPoints.map(p => [p.lat, p.lon]);
@@ -486,7 +516,7 @@
         opacity: 0.9
       }).addTo(map);
 
-      // Keep full points for hover sync (accurate distance lookup)
+      // Keep full points for elevation chart hover (accurate distance lookup)
       trackPoints = trail.track.points;
 
       // Hover sync from map to chart
@@ -568,15 +598,16 @@
       map.fitBounds(bounds, { padding: [20, 20] });
     }
 
-    // Bidirectional hover sync
+    // Bidirectional hover sync - uses displayPoints for faster lookup
     function handleMapHover(e) {
-      if (!trackPoints.length) return;
+      if (!displayPoints.length) return;
 
       const latlng = e.latlng;
       let nearestPoint = null;
       let minDist = Infinity;
 
-      for (const p of trackPoints) {
+      // Use simplified displayPoints for O(n) where n is ~3000 instead of 50k+
+      for (const p of displayPoints) {
         const dist = Math.sqrt(
           Math.pow(p.lat - latlng.lat, 2) +
           Math.pow(p.lon - latlng.lng, 2)
@@ -710,7 +741,7 @@
 
     async function loadTrailData() {
       try {
-        const response = await fetch(`../../data/generated/${TRAIL_ID}.json`);
+        const response = await fetch(`/data/generated/${TRAIL_ID}.json`);
         if (!response.ok) throw new Error('Trail data not found');
         return await response.json();
       } catch (error) {
