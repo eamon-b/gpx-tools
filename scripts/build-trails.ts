@@ -146,6 +146,11 @@ const WAYPOINT_PREFIX_MAP: Record<string, string> = {
   'ST:': 'side-trip',
   'ST ': 'side-trip',
   'M ': 'mountain',
+  'CP': 'caravan-park',
+  'TH': 'trail-head',
+  'F': 'food',
+  'R': 'road-crossing',
+  'T': 'town',
 };
 
 /** Known town/resupply names (add more as needed) */
@@ -552,7 +557,7 @@ function parseCaltopoGeojson(jsonPath: string): CaltopoData {
         const folderId = feature.properties.folderId;
         const folderName = folderId ? folderNames.get(folderId) || '' : '';
 
-        // Categorize by folder
+        // Categorize by folder first, then fall back to prefix-based inference
         let category = 'waypoint';
         if (folderName.includes('hut')) category = 'hut';
         else if (folderName.includes('campsite')) category = 'campsite';
@@ -561,6 +566,10 @@ function parseCaltopoGeojson(jsonPath: string): CaltopoData {
         else if (folderName.includes('mountain')) category = 'mountain';
         else if (folderName.includes('side trip')) category = 'side-trip';
         else if (folderName.includes('town')) category = 'town';
+        else {
+          // No folder match - fall back to prefix-based inference from waypoint name
+          category = inferWaypointType(waypointName);
+        }
 
         result.waypointCategories.set(waypointName, category);
 

@@ -152,6 +152,21 @@
     .waypoint-type.type-mountain {
       background: #bcaaa4;
     }
+    .waypoint-type.type-side-trip {
+      background: #f8bbd0;
+    }
+    .waypoint-type.type-caravan-park {
+      background: #c5e1a5;
+    }
+    .waypoint-type.type-trail-head {
+      background: #ffe082;
+    }
+    .waypoint-type.type-food {
+      background: #ffab91;
+    }
+    .waypoint-type.type-road-crossing {
+      background: #b0bec5;
+    }
     .waypoints-list {
       list-style: none;
       padding: 0;
@@ -280,6 +295,11 @@
     .waypoint-marker.water { background: #81d4fa; }
     .waypoint-marker.water-tank { background: #80cbc4; }
     .waypoint-marker.mountain { background: #bcaaa4; }
+    .waypoint-marker.side-trip { background: #f8bbd0; }
+    .waypoint-marker.caravan-park { background: #c5e1a5; }
+    .waypoint-marker.trail-head { background: #ffe082; }
+    .waypoint-marker.food { background: #ffab91; }
+    .waypoint-marker.road-crossing { background: #b0bec5; }
     .waypoint-marker.waypoint { background: #e0e0e0; }
     @media (max-width: 768px) {
       .trail-map {
@@ -307,6 +327,10 @@
     .export-btn:disabled {
       background: #ccc;
       cursor: not-allowed;
+    }
+    .export-buttons {
+      display: flex;
+      gap: 0.5rem;
     }
   </style>
 </head>
@@ -369,7 +393,10 @@
 
       <div class="section-header">
         <h3>Waypoints</h3>
-        <button id="export-btn" class="export-btn" disabled>Export CSV</button>
+        <div class="export-buttons">
+          <button id="export-csv-btn" class="export-btn" disabled>Download CSV</button>
+          <button id="export-gpx-btn" class="export-btn" disabled>Download GPX</button>
+        </div>
       </div>
       <div class="waypoints-table-wrapper" id="waypoints-container">
         <p>Loading waypoints...</p>
@@ -402,6 +429,11 @@
       water: { icon: '💧' },
       'water-tank': { icon: '🚰' },
       mountain: { icon: '⛰️' },
+      'side-trip': { icon: '🥾' },
+      'caravan-park': { icon: '🏕️' },
+      'trail-head': { icon: '🚗' },
+      food: { icon: '🍴' },
+      'road-crossing': { icon: '🛣️' },
       waypoint: { icon: '📍' }
     };
 
@@ -853,7 +885,12 @@
           'campsite': 'type-campsite',
           'water': 'type-water',
           'water-tank': 'type-water-tank',
-          'mountain': 'type-mountain'
+          'mountain': 'type-mountain',
+          'side-trip': 'type-side-trip',
+          'caravan-park': 'type-caravan-park',
+          'trail-head': 'type-trail-head',
+          'food': 'type-food',
+          'road-crossing': 'type-road-crossing'
         };
         return typeMap[type] || '';
       }
@@ -1059,6 +1096,65 @@
       URL.revokeObjectURL(url);
     }
 
+    function exportGpx(trail) {
+      const { config, track, waypoints } = trail;
+
+      // Build GPX XML
+      const gpxLines = [];
+      gpxLines.push('<?xml version="1.0" encoding="UTF-8"?>');
+      gpxLines.push('<gpx version="1.1" creator="GPX Tools" xmlns="http://www.topografix.com/GPX/1/1">');
+      gpxLines.push(`  <metadata>`);
+      gpxLines.push(`    <name>${escapeXml(config.name)}</name>`);
+      gpxLines.push(`    <desc>${escapeXml(config.region)} - ${track.totalDistance.toFixed(1)} km</desc>`);
+      gpxLines.push(`  </metadata>`);
+
+      // Add waypoints
+      for (const wp of waypoints || []) {
+        gpxLines.push(`  <wpt lat="${wp.lat}" lon="${wp.lon}">`);
+        if (wp.elevation != null) gpxLines.push(`    <ele>${wp.elevation}</ele>`);
+        gpxLines.push(`    <name>${escapeXml(wp.name || 'Waypoint')}</name>`);
+        if (wp.type) gpxLines.push(`    <type>${escapeXml(wp.type)}</type>`);
+        if (wp.description) gpxLines.push(`    <desc>${escapeXml(wp.description)}</desc>`);
+        gpxLines.push(`  </wpt>`);
+      }
+
+      // Add track
+      gpxLines.push(`  <trk>`);
+      gpxLines.push(`    <name>${escapeXml(config.name)}</name>`);
+      gpxLines.push(`    <trkseg>`);
+      for (const pt of track.points || []) {
+        gpxLines.push(`      <trkpt lat="${pt.lat}" lon="${pt.lon}">`);
+        if (pt.ele != null) gpxLines.push(`        <ele>${pt.ele}</ele>`);
+        gpxLines.push(`      </trkpt>`);
+      }
+      gpxLines.push(`    </trkseg>`);
+      gpxLines.push(`  </trk>`);
+
+      gpxLines.push('</gpx>');
+
+      const gpxContent = gpxLines.join('\n');
+      const blob = new Blob([gpxContent], { type: 'application/gpx+xml;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${config.id || 'trail'}.gpx`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    }
+
+    function escapeXml(text) {
+      if (text == null) return '';
+      return String(text)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&apos;');
+    }
+
     async function init() {
       const trail = await loadTrailData();
       if (!trail) {
@@ -1090,10 +1186,13 @@
         }
       });
 
-      // Enable export button
-      const exportBtn = document.getElementById('export-btn');
-      exportBtn.disabled = false;
-      exportBtn.addEventListener('click', () => exportDatasheet(trail));
+      // Enable export buttons
+      const exportCsvBtn = document.getElementById('export-csv-btn');
+      const exportGpxBtn = document.getElementById('export-gpx-btn');
+      exportCsvBtn.disabled = false;
+      exportGpxBtn.disabled = false;
+      exportCsvBtn.addEventListener('click', () => exportDatasheet(trail));
+      exportGpxBtn.addEventListener('click', () => exportGpx(trail));
 
       // Redraw on resize (debounced to prevent jank)
       window.addEventListener('resize', debounce(() => {
