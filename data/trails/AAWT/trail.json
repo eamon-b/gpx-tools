@@ -4,10 +4,12 @@
   "shortName": "AAWT",
   "region": "Australian Alps (VIC/NSW/ACT)",
   "lengthKm": 688.3,
-  "difficulty": "hard",
-  "bestMonths": [11, 12, 1, 2, 3, 4],
   "gpxFile": "AAWT_2025.gpx",
   "description": "Trail data auto-generated from AAWT_2025.gpx",
+  "direction": {
+    "default": "NOBO",
+    "reversed": "SOBO"
+  },
   "climateLocations": [
     {
       "name": "Walhalla",

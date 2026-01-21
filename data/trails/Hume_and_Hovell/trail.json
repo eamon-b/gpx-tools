@@ -4,10 +4,12 @@
   "shortName": "H&H",
   "region": "NSW Southern Tablelands",
   "lengthKm": 426,
-  "difficulty": "moderate",
-  "bestMonths": [3, 4, 5, 9, 10, 11],
   "gpxFile": "Hume_and_Hovell.gpx",
   "description": "Historic walking track following the route of explorers Hamilton Hume and William Hovell from 1824.",
+  "direction": {
+    "default": "SOBO",
+    "reversed": "NOBO"
+  },
   "climateLocations": [
     {
       "name": "Yass",

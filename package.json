@@ -30,6 +30,7 @@
   },
   "devDependencies": {
     "@types/file-saver": "^2.0.7",
+    "@types/leaflet": "^1.9.21",
     "@types/node": "^20.10.0",
     "@types/papaparse": "^5.3.14",
     "@types/suncalc": "^1.9.2",

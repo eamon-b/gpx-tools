@@ -54,19 +54,23 @@ interface ClimateLocationConfig {
   lon: number;
 }
 
+interface DirectionConfig {
+  default: string;
+  reversed: string;
+}
+
 interface TrailConfig {
   id: string;
   name: string;
   shortName: string;
   region: string;
   lengthKm: number;
-  difficulty: string;
-  bestMonths: number[];
   gpxFile: string;
   waypointsFile?: string;  // Now optional - can extract from GPX
   climateFile?: string;
   climateLocations?: ClimateLocationConfig[];
   description?: string;
+  direction?: DirectionConfig;
 }
 
 interface GpxPoint {
@@ -206,8 +210,6 @@ const OUTPUT_DIR = path.join(PROJECT_ROOT, 'public/data/generated');
 const TRAIL_PAGES_DIR = path.join(PROJECT_ROOT, 'src/web/trails');
 const TRAIL_TEMPLATE_PATH = path.join(TRAIL_PAGES_DIR, 'trail-template.html');
 const CLIMATE_TEMPLATE_PATH = path.join(TRAIL_PAGES_DIR, 'climate-template.html');
-
-const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
 /**
  * Parse GPX XML content using jsdom (for Node.js environment)
@@ -676,8 +678,6 @@ function generateTrailConfig(trailDir: string, gpxFile: string, gpxData: { point
     shortName: dirName.toUpperCase(),
     region: 'Unknown',  // User should fill this in
     lengthKm: Math.round(totalDistance * 10) / 10,
-    difficulty: 'unknown',  // User should fill this in
-    bestMonths: [],  // User should fill this in
     gpxFile,
     description: `Trail data auto-generated from ${gpxFile}. Edit trail.json to customize.`,
   };
@@ -946,20 +946,12 @@ function generateTrailPage(trail: ProcessedTrail): void {
 
   const template = fs.readFileSync(TRAIL_TEMPLATE_PATH, 'utf-8');
 
-  // Format best months
-  const bestMonths = (trail.config.bestMonths || [])
-    .map(m => MONTH_NAMES[m - 1] || '')
-    .filter(Boolean)
-    .join(', ') || 'Year-round';
-
   // Replace placeholders
   const html = template
     .replace(/\{\{TRAIL_ID\}\}/g, trail.config.id)
     .replace(/\{\{TRAIL_NAME\}\}/g, trail.config.name)
     .replace(/\{\{TRAIL_SHORT_NAME\}\}/g, trail.config.shortName || trail.config.name)
-    .replace(/\{\{TRAIL_REGION\}\}/g, trail.config.region || 'Unknown')
-    .replace(/\{\{TRAIL_DIFFICULTY\}\}/g, trail.config.difficulty || 'Unknown')
-    .replace(/\{\{TRAIL_BEST_MONTHS\}\}/g, bestMonths);
+    .replace(/\{\{TRAIL_REGION\}\}/g, trail.config.region || 'Unknown');
 
   // Create trail directory and write HTML
   const trailPageDir = path.join(TRAIL_PAGES_DIR, trail.config.id);
