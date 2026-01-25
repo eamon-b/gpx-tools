@@ -66,6 +66,7 @@ interface TrailConfig {
   region: string;
   lengthKm: number;
   gpxFile: string;
+  geojsonFile?: string;  // CalTopo GeoJSON file for alternates/side trips
   waypointsFile?: string;  // Now optional - can extract from GPX
   climateFile?: string;
   climateLocations?: ClimateLocationConfig[];
@@ -647,12 +648,41 @@ function findGpxFile(trailDir: string): string | null {
 }
 
 /**
- * Find a CalTopo GeoJSON file in a directory
+ * Find a CalTopo GeoJSON file in a directory.
+ * If explicitFile is provided, use that. Otherwise, auto-detect by finding
+ * JSON files with a features array (excluding trail.json and climate.json).
  */
-function findGeojsonFile(trailDir: string): string | null {
+function findGeojsonFile(trailDir: string, explicitFile?: string): string | null {
+  // If explicitly specified, use that
+  if (explicitFile) {
+    const filePath = path.join(trailDir, explicitFile);
+    if (fs.existsSync(filePath)) {
+      return explicitFile;
+    }
+    console.log(`  Warning: Specified geojsonFile not found: ${explicitFile}`);
+  }
+
+  // Auto-detect: find JSON files that look like GeoJSON (have features array)
   const files = fs.readdirSync(trailDir);
-  const jsonFile = files.find(f => f.toLowerCase().endsWith('.json') && f !== 'trail.json');
-  return jsonFile || null;
+  const jsonFiles = files.filter(f =>
+    f.toLowerCase().endsWith('.json') &&
+    f !== 'trail.json' &&
+    f !== 'climate.json'
+  );
+
+  for (const file of jsonFiles) {
+    try {
+      const content = fs.readFileSync(path.join(trailDir, file), 'utf-8');
+      const parsed = JSON.parse(content);
+      if (Array.isArray(parsed.features)) {
+        return file;  // This is a GeoJSON file
+      }
+    } catch {
+      // Not valid JSON or can't read, skip
+    }
+  }
+
+  return null;
 }
 
 /**
@@ -839,7 +869,7 @@ async function processTrail(trailDir: string, autoGenConfig: boolean = false): P
   let sideTrips: RouteVariant[] = [];
 
   // If GeoJSON exists, use it to enhance data
-  const geojsonFile = findGeojsonFile(trailDir);
+  const geojsonFile = findGeojsonFile(trailDir, config.geojsonFile);
   if (geojsonFile) {
     const geojsonPath = path.join(trailDir, geojsonFile);
     const caltopoData = parseCaltopoGeojson(geojsonPath);

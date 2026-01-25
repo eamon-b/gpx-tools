@@ -5,7 +5,12 @@
   "region": "West MacDonnell Ranges",
   "lengthKm": 230.6,
   "gpxFile": "Larapinta_Trail.gpx",
+  "geojsonFile": "Larapinta_Trail.json",
   "description": "Trail data auto-generated from Larapinta_Trail.gpx. Edit trail.json to customize.",
+  "direction": {
+    "default": "Westbound",
+    "reversed": "Eastbound"
+  },
   "climateLocations": [
     {
       "name": "Alice Springs",

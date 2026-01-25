@@ -6,6 +6,10 @@
   "lengthKm": 39.6,
   "gpxFile": "Heysen_Trail_20250515.gpx",
   "description": "Trail data auto-generated from Heysen_Trail_20250515.gpx. Edit trail.json to customize.",
+  "direction": {
+    "default": "NOBO",
+    "reversed": "SOBO"
+  },
   "climateLocations": [
     {
       "name": "Cape Jervis",
