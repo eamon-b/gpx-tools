@@ -131,6 +131,8 @@ interface ProcessedTrail {
   alternates: RouteVariant[];
   sideTrips: RouteVariant[];
   climate: Record<string, unknown> | null;
+  climateLocations: ClimateLocationConfig[] | null;
+  direction: DirectionConfig | null;
 }
 
 interface CaltopoData {
@@ -900,13 +902,12 @@ async function processTrail(trailDir: string, autoGenConfig: boolean = false): P
     }
   }
 
-  // Parse climate if exists
+  // Parse climate if exists (check config.climateFile or default climate.json)
   let climate: Record<string, unknown> | null = null;
-  if (config.climateFile) {
-    const climatePath = path.join(trailDir, config.climateFile);
-    if (fs.existsSync(climatePath)) {
-      climate = JSON.parse(fs.readFileSync(climatePath, 'utf-8'));
-    }
+  const climateFile = config.climateFile || 'climate.json';
+  const climatePath = path.join(trailDir, climateFile);
+  if (fs.existsSync(climatePath)) {
+    climate = JSON.parse(fs.readFileSync(climatePath, 'utf-8'));
   }
 
   // Update config with calculated distance
@@ -932,6 +933,8 @@ async function processTrail(trailDir: string, autoGenConfig: boolean = false): P
     alternates: enrichedAlternates,
     sideTrips: enrichedSideTrips,
     climate,
+    climateLocations: config.climateLocations || null,
+    direction: config.direction || null,
   };
 }
 

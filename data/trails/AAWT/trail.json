@@ -23,13 +23,14 @@
     },
     {
       "name": "Thredbo",
-      "lat": -36.50,
-      "lon": 148.30
+      "lat": -36.5,
+      "lon": 148.3
     },
     {
       "name": "Namadgi",
       "lat": -35.75,
       "lon": 148.95
     }
-  ]
+  ],
+  "climateFile": "climate.json"
 }
