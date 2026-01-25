@@ -5,6 +5,7 @@ import { JSDOM } from 'jsdom';
 import { haversineDistance as haversineDistanceMeters } from '../src/lib/distance.js';
 import { douglasPeucker } from '../src/lib/gpx-optimizer.js';
 import { classifyTracks, combineTracksGeographically } from '../src/lib/track-classification.js';
+import { classifyWaypoint } from '../src/lib/waypoint-classifier.js';
 import type { TrackClassificationConfig, GpxPoint as LibGpxPoint } from '../src/lib/types.js';
 
 /** Calculate haversine distance in km */
@@ -146,63 +147,6 @@ interface CaltopoData {
   sideTrips: RouteVariant[];
 }
 
-/** Waypoint type inference from name prefixes (CalTopo convention) */
-const WAYPOINT_PREFIX_MAP: Record<string, string> = {
-  'C ': 'campsite',
-  'W ': 'water',
-  'H ': 'hut',
-  'WT:': 'water-tank',
-  'WT ': 'water-tank',
-  'ST:': 'side-trip',
-  'ST ': 'side-trip',
-  'M ': 'mountain',
-  'CP': 'caravan-park',
-  'TH': 'trail-head',
-  'F': 'food',
-  'R': 'road-crossing',
-  'T': 'town',
-};
-
-/** Known town/resupply names (add more as needed) */
-const KNOWN_TOWNS = new Set([
-  'mt hotham', 'adaminaby', 'falls creek', 'omeo', 'thredbo',
-  'glengarry', 'rawson', 'walhalla', 'jindabyne', 'khancoban',
-]);
-
-function inferWaypointType(name: string): string {
-  const nameLower = name.toLowerCase();
-
-  // Check for known towns
-  if (KNOWN_TOWNS.has(nameLower)) {
-    return 'town';
-  }
-
-  // Check for prefix patterns
-  for (const [prefix, type] of Object.entries(WAYPOINT_PREFIX_MAP)) {
-    if (name.startsWith(prefix)) {
-      return type;
-    }
-  }
-
-  // Infer from name content
-  if (nameLower.includes('hut') || nameLower.includes('shelter')) return 'hut';
-  if (nameLower.includes('camp')) return 'campsite';
-  if (nameLower.includes('water') || nameLower.includes('creek') || nameLower.includes('river') || nameLower.includes('spring')) return 'water';
-  if (nameLower.includes('tank')) return 'water-tank';
-  if (nameLower.includes('mt ') || nameLower.includes('mount') || nameLower.includes('peak')) return 'mountain';
-
-  return 'waypoint';
-}
-
-function cleanWaypointName(name: string): string {
-  // Remove type prefixes from display name
-  for (const prefix of Object.keys(WAYPOINT_PREFIX_MAP)) {
-    if (name.startsWith(prefix)) {
-      return name.slice(prefix.length).trim();
-    }
-  }
-  return name;
-}
 
 // Handle both Windows and Unix paths from import.meta.url
 const SCRIPTS_DIR = path.dirname(
@@ -272,13 +216,13 @@ function parseGpxNode(xml: string): ParsedGpxResult {
   // Extract waypoints from <wpt> elements
   const wptElements = doc.querySelectorAll('wpt');
   const waypoints: Waypoint[] = (Array.from(wptElements) as Element[]).map(wpt => {
-    const name = wpt.querySelector('name')?.textContent || 'Unnamed';
-    const inferredType = inferWaypointType(name);
+    const rawName = wpt.querySelector('name')?.textContent || 'Unnamed';
+    const classification = classifyWaypoint(rawName);
     return {
-      name: cleanWaypointName(name),
+      name: classification.cleanedName,
       lat: parseFloat(wpt.getAttribute('lat') || '0'),
       lon: parseFloat(wpt.getAttribute('lon') || '0'),
-      type: inferredType,
+      type: classification.type,
       description: wpt.querySelector('desc')?.textContent || undefined,
     };
   });
@@ -605,29 +549,19 @@ function parseCaltopoGeojson(jsonPath: string): CaltopoData {
     // Process markers (waypoints)
     for (const feature of geojson.features || []) {
       if (feature.properties?.class === 'Marker') {
-        const waypointName = feature.properties.title || '';
+        const rawName = feature.properties.title || '';
         const folderId = feature.properties.folderId;
         const folderName = folderId ? folderNames.get(folderId) || '' : '';
 
-        // Categorize by folder first, then fall back to prefix-based inference
-        let category = 'waypoint';
-        if (folderName.includes('hut')) category = 'hut';
-        else if (folderName.includes('campsite')) category = 'campsite';
-        else if (folderName.includes('water tank')) category = 'water-tank';
-        else if (folderName.includes('water source')) category = 'water';
-        else if (folderName.includes('mountain')) category = 'mountain';
-        else if (folderName.includes('side trip')) category = 'side-trip';
-        else if (folderName.includes('town')) category = 'town';
-        else {
-          // No folder match - fall back to prefix-based inference from waypoint name
-          category = inferWaypointType(waypointName);
-        }
+        // Use classifyWaypoint with folder info to get type and cleaned name
+        const classification = classifyWaypoint(rawName, { folderName });
 
-        result.waypointCategories.set(waypointName, category);
+        // Key by cleaned name for easier matching with GPX waypoints
+        result.waypointCategories.set(classification.cleanedName, classification.type);
 
-        // Extract description if available
+        // Extract description if available (also keyed by cleaned name)
         if (feature.properties.description) {
-          result.waypointDescriptions.set(waypointName, feature.properties.description);
+          result.waypointDescriptions.set(classification.cleanedName, feature.properties.description);
         }
       }
     }
@@ -941,20 +875,8 @@ async function processTrail(trailDir: string, autoGenConfig: boolean = false): P
     if (caltopoData.waypointCategories.size > 0) {
       console.log(`  ✓ Using ${geojsonFile} for waypoint categorization`);
       // Update waypoint types and descriptions from GeoJSON
+      // Both GPX waypoints and GeoJSON categories are now keyed by cleaned name
       waypoints = waypoints.map(wp => {
-        // Look up by original name (with prefix)
-        for (const [prefix] of Object.entries(WAYPOINT_PREFIX_MAP)) {
-          const originalName = prefix + wp.name;
-          if (caltopoData.waypointCategories.has(originalName)) {
-            const desc = caltopoData.waypointDescriptions.get(originalName);
-            return {
-              ...wp,
-              type: caltopoData.waypointCategories.get(originalName)!,
-              description: desc || wp.description,
-            };
-          }
-        }
-        // Try direct match
         if (caltopoData.waypointCategories.has(wp.name)) {
           const desc = caltopoData.waypointDescriptions.get(wp.name);
           return {

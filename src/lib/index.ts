@@ -86,3 +86,12 @@ export {
   combineTracksGeographically,
   TRACK_CLASSIFICATION_DEFAULTS,
 } from './track-classification';
+
+// Waypoint Classification
+export type { ClassificationResult, WaypointPrefixRule } from './waypoint-classifier';
+export {
+  classifyWaypoint,
+  FOLDER_TYPE_MAP,
+  DEFAULT_PREFIX_RULES,
+  KNOWN_TOWNS,
+} from './waypoint-classifier';
