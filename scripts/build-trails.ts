@@ -4,6 +4,8 @@ import Papa from 'papaparse';
 import { JSDOM } from 'jsdom';
 import { haversineDistance as haversineDistanceMeters } from '../src/lib/distance.js';
 import { douglasPeucker } from '../src/lib/gpx-optimizer.js';
+import { classifyTracks, combineTracksGeographically } from '../src/lib/track-classification.js';
+import type { TrackClassificationConfig, GpxPoint as LibGpxPoint } from '../src/lib/types.js';
 
 /** Calculate haversine distance in km */
 function haversineDistanceKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
@@ -67,6 +69,7 @@ interface TrailConfig {
   lengthKm: number;
   gpxFile: string;
   geojsonFile?: string;  // CalTopo GeoJSON file for alternates/side trips
+  trackClassification?: TrackClassificationConfig;  // Patterns for multi-track GPX classification
   waypointsFile?: string;  // Now optional - can extract from GPX
   climateFile?: string;
   climateLocations?: ClimateLocationConfig[];
@@ -214,22 +217,33 @@ const TRAIL_PAGES_DIR = path.join(PROJECT_ROOT, 'src/web/trails');
 const TRAIL_TEMPLATE_PATH = path.join(TRAIL_PAGES_DIR, 'trail-template.html');
 const CLIMATE_TEMPLATE_PATH = path.join(TRAIL_PAGES_DIR, 'climate-template.html');
 
+interface ParsedGpxTrack {
+  name: string;
+  points: GpxPoint[];
+}
+
+interface ParsedGpxResult {
+  tracks: ParsedGpxTrack[];
+  waypoints: Waypoint[];
+  name: string | null;
+}
+
 /**
  * Parse GPX XML content using jsdom (for Node.js environment)
- * Extracts both track points and waypoints
+ * Extracts all tracks and waypoints for later classification
  */
-function parseGpxNode(xml: string): { points: GpxPoint[]; waypoints: Waypoint[]; name: string | null; trackInfo: { name: string; pointCount: number }[] } {
+function parseGpxNode(xml: string): ParsedGpxResult {
   const dom = new JSDOM(xml, { contentType: 'text/xml' });
   const doc = dom.window.document;
 
   // Extract GPX name from metadata
   const gpxName = doc.querySelector('metadata name')?.textContent || null;
 
-  // Get all tracks and their info
-  const tracks = doc.querySelectorAll('trk');
-  const trackInfo: { name: string; pointCount: number; points: GpxPoint[] }[] = [];
+  // Get all tracks with their points
+  const trkElements = doc.querySelectorAll('trk');
+  const tracks: ParsedGpxTrack[] = [];
 
-  for (const track of Array.from(tracks) as Element[]) {
+  for (const track of Array.from(trkElements) as Element[]) {
     const trackName = track.querySelector('name')?.textContent || 'Unnamed';
     const trackPoints = track.querySelectorAll('trkseg trkpt');
     const points = (Array.from(trackPoints) as Element[]).map(pt => ({
@@ -238,40 +252,21 @@ function parseGpxNode(xml: string): { points: GpxPoint[]; waypoints: Waypoint[];
       ele: parseFloat(pt.querySelector('ele')?.textContent || '0'),
       time: pt.querySelector('time')?.textContent || null,
     }));
-    trackInfo.push({ name: trackName, pointCount: points.length, points });
+    tracks.push({ name: trackName, points });
   }
 
-  // Find the main track - look for "main" in name, or use the longest track
-  let mainTrackIndex = trackInfo.findIndex(t =>
-    t.name.toLowerCase().includes('main') &&
-    !t.name.toLowerCase().includes('side') &&
-    !t.name.toLowerCase().includes('alt')
-  );
-
-  // If no "main" track found, use the track with the most points
-  if (mainTrackIndex === -1 && trackInfo.length > 0) {
-    mainTrackIndex = trackInfo.reduce((maxIdx, track, idx, arr) =>
-      track.pointCount > arr[maxIdx].pointCount ? idx : maxIdx, 0);
-  }
-
-  let points: GpxPoint[] = [];
-  if (mainTrackIndex >= 0) {
-    points = trackInfo[mainTrackIndex].points;
-    console.log(`  Using track "${trackInfo[mainTrackIndex].name}" (${points.length} points)`);
-    if (trackInfo.length > 1) {
-      console.log(`  (${trackInfo.length - 1} other tracks: alternates/side trips)`);
-    }
-  }
-
-  // If no track points, try route points
-  if (points.length === 0) {
+  // If no tracks found, try route points as a single "track"
+  if (tracks.length === 0) {
     const routePoints = doc.querySelectorAll('rte rtept');
-    points = (Array.from(routePoints) as Element[]).map(pt => ({
-      lat: parseFloat(pt.getAttribute('lat') || '0'),
-      lon: parseFloat(pt.getAttribute('lon') || '0'),
-      ele: parseFloat(pt.querySelector('ele')?.textContent || '0'),
-      time: pt.querySelector('time')?.textContent || null,
-    }));
+    if (routePoints.length > 0) {
+      const points = (Array.from(routePoints) as Element[]).map(pt => ({
+        lat: parseFloat(pt.getAttribute('lat') || '0'),
+        lon: parseFloat(pt.getAttribute('lon') || '0'),
+        ele: parseFloat(pt.querySelector('ele')?.textContent || '0'),
+        time: pt.querySelector('time')?.textContent || null,
+      }));
+      tracks.push({ name: 'Route', points });
+    }
   }
 
   // Extract waypoints from <wpt> elements
@@ -289,11 +284,63 @@ function parseGpxNode(xml: string): { points: GpxPoint[]; waypoints: Waypoint[];
   });
 
   return {
-    points,
+    tracks,
     waypoints,
     name: gpxName,
-    trackInfo: trackInfo.map(t => ({ name: t.name, pointCount: t.pointCount }))
   };
+}
+
+/**
+ * Select and combine main route tracks using classification.
+ * Falls back to longest track if no classification config provided.
+ */
+function selectMainRoute(
+  gpxData: ParsedGpxResult,
+  config: TrailConfig
+): { points: GpxPoint[]; classificationSummary: string } {
+  const classification = classifyTracks(
+    gpxData.tracks.map(t => ({
+      name: t.name,
+      points: t.points.map(p => ({ ...p, time: p.time })) as LibGpxPoint[],
+    })),
+    config.trackClassification || {}
+  );
+
+  // Log classification results
+  const parts: string[] = [];
+  if (classification.mainTracks.length > 0) parts.push(`${classification.mainTracks.length} main`);
+  if (classification.alternateTracks.length > 0) parts.push(`${classification.alternateTracks.length} alternates`);
+  if (classification.sideTripTracks.length > 0) parts.push(`${classification.sideTripTracks.length} side trips`);
+  if (classification.ignoredTracks.length > 0) parts.push(`${classification.ignoredTracks.length} ignored`);
+  if (classification.unclassifiedTracks.length > 0) parts.push(`${classification.unclassifiedTracks.length} unclassified`);
+  const classificationSummary = parts.length > 0 ? parts.join(', ') : 'no tracks';
+
+  // No main tracks found
+  if (classification.mainTracks.length === 0) {
+    return { points: [], classificationSummary };
+  }
+
+  // Single main track - return directly
+  if (classification.mainTracks.length === 1) {
+    return {
+      points: classification.mainTracks[0].points,
+      classificationSummary,
+    };
+  }
+
+  // Multiple main tracks - combine geographically
+  const { combinedPoints, orderedNames, warnings } = combineTracksGeographically(
+    classification.mainTracks.map(t => ({ name: t.name, points: t.points }))
+  );
+
+  // Log warnings about gaps
+  for (const warning of warnings) {
+    console.log(`  Warning: ${warning.gapMeters.toFixed(0)}m gap between "${warning.fromTrack}" and "${warning.toTrack}"`);
+  }
+
+  console.log(`  Combined ${orderedNames.length} tracks: ${orderedNames.slice(0, 3).join(', ')}${orderedNames.length > 3 ? '...' : ''}`);
+
+  return { points: combinedPoints, classificationSummary };
 }
 
 /**
@@ -688,14 +735,14 @@ function findGeojsonFile(trailDir: string, explicitFile?: string): string | null
 /**
  * Generate trail.json config from GPX file analysis
  */
-function generateTrailConfig(trailDir: string, gpxFile: string, gpxData: { points: GpxPoint[]; waypoints: Waypoint[]; name: string | null }): TrailConfig {
+function generateTrailConfig(trailDir: string, gpxFile: string, gpxData: ParsedGpxResult, mainRoutePoints: GpxPoint[]): TrailConfig {
   const trailId = path.basename(trailDir).toLowerCase();
 
-  // Calculate total distance
+  // Calculate total distance from main route points
   let totalDistance = 0;
-  for (let i = 1; i < gpxData.points.length; i++) {
-    const prev = gpxData.points[i - 1];
-    const curr = gpxData.points[i];
+  for (let i = 1; i < mainRoutePoints.length; i++) {
+    const prev = mainRoutePoints[i - 1];
+    const curr = mainRoutePoints[i];
     totalDistance += haversineDistanceKm(prev.lat, prev.lon, curr.lat, curr.lon);
   }
 
@@ -804,13 +851,18 @@ async function processTrail(trailDir: string, autoGenConfig: boolean = false): P
   const gpxContent = fs.readFileSync(gpxPath, 'utf-8');
   const gpxData = parseGpxNode(gpxContent);
 
-  // Generate or load config
+  // Load config first (needed for track classification patterns)
   let config: TrailConfig;
   if (autoGenConfig) {
-    config = generateTrailConfig(trailDir, gpxFile, gpxData);
-    // Write generated config for user to customize later
-    fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
-    console.log(`  ✓ Generated trail.json`);
+    // For auto-gen, create a minimal config first, then update after classification
+    config = {
+      id: path.basename(trailDir).toLowerCase(),
+      name: gpxData.name || path.basename(trailDir),
+      shortName: path.basename(trailDir).toUpperCase(),
+      region: 'Unknown',
+      lengthKm: 0,
+      gpxFile,
+    };
   } else {
     config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
     // Fill in gpxFile if missing
@@ -819,12 +871,24 @@ async function processTrail(trailDir: string, autoGenConfig: boolean = false): P
     }
   }
 
+  // Select and combine main route tracks using classification
+  const { points: mainRoutePoints, classificationSummary } = selectMainRoute(gpxData, config);
+  console.log(`  Classified: ${classificationSummary}`);
+
+  // For auto-gen config, now generate the full config with distance calculated
+  if (autoGenConfig) {
+    config = generateTrailConfig(trailDir, gpxFile, gpxData, mainRoutePoints);
+    // Write generated config for user to customize later
+    fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+    console.log(`  ✓ Generated trail.json`);
+  }
+
   // Calculate cumulative distance and elevation
   let totalDistance = 0;
   let totalAscent = 0;
   let totalDescent = 0;
 
-  const points = gpxData.points.map((p, i, arr) => {
+  const points = mainRoutePoints.map((p, i, arr) => {
     if (i > 0) {
       const prev = arr[i - 1];
       const dist = haversineDistanceKm(prev.lat, prev.lon, p.lat, p.lon);
@@ -944,7 +1008,7 @@ async function processTrail(trailDir: string, autoGenConfig: boolean = false): P
   config.lengthKm = Math.round(totalDistance * 10) / 10;
 
   // Enrich waypoints with distance and elevation data
-  const enrichedWaypoints = enrichWaypoints(waypoints, gpxData.points);
+  const enrichedWaypoints = enrichWaypoints(waypoints, mainRoutePoints);
 
   // Enrich variants with junction point data (where they connect to main track)
   const enrichedAlternates = findVariantJunctions(alternates, points);

@@ -6,6 +6,12 @@
   "lengthKm": 39.6,
   "gpxFile": "Heysen_Trail_20250515.gpx",
   "description": "Trail data auto-generated from Heysen_Trail_20250515.gpx. Edit trail.json to customize.",
+  "trackClassification": {
+    "mainRoutePatterns": ["^Map \\d+[A-D]$"],
+    "alternatePatterns": ["Alternative", "Alternatve", "\\bAlt\\b"],
+    "sideTripPatterns": ["Spur", "spur trail"],
+    "ignorePatterns": ["^Section \\d+$"]
+  },
   "direction": {
     "default": "NOBO",
     "reversed": "SOBO"

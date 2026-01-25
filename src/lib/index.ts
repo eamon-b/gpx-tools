@@ -24,6 +24,11 @@ export type {
   OptimizationResult,
   OptimizationStats,
   BatchOptimizationStats,
+  TrackClassificationConfig,
+  ClassifiedTrack,
+  TrackClassificationResult,
+  CombineTracksResult,
+  CombineTracksWarning,
 } from './types';
 
 // GPX Parser
@@ -74,3 +79,10 @@ export {
   roundCoordinates,
   GPX_OPTIMIZER_DEFAULTS,
 } from './gpx-optimizer';
+
+// Track Classification
+export {
+  classifyTracks,
+  combineTracksGeographically,
+  TRACK_CLASSIFICATION_DEFAULTS,
+} from './track-classification';
