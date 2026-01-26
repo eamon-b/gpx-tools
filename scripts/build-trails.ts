@@ -110,6 +110,22 @@ interface WaypointVisit {
   distanceFromTrack: number;
 }
 
+interface VariantWaypoint {
+  name: string;
+  type: string;
+  lat: number;
+  lon: number;
+  elevation: number;
+  distance: number;        // segment distance from previous waypoint
+  totalDistance: number;   // cumulative distance along variant
+  ascent: number;
+  descent: number;
+  totalAscent: number;
+  totalDescent: number;
+  variantTrackIndex: number;
+  description?: string;
+}
+
 interface RouteVariant {
   name: string;
   type: 'alternate' | 'side-trip';
@@ -121,6 +137,7 @@ interface RouteVariant {
   startTrackIndex?: number;   // index in track points array
   endDistance?: number;       // km where alternate rejoins (alternates only)
   endTrackIndex?: number;     // track index where it rejoins
+  waypoints?: VariantWaypoint[];
 }
 
 interface ProcessedTrail {
@@ -521,6 +538,61 @@ function enrichWaypoints(
   }
 
   return enriched;
+}
+
+/**
+ * Enrich route variants with waypoint data.
+ * For each variant, walks along its track points and matches nearby waypoints
+ * using the same hysteresis approach as the main route.
+ */
+function enrichVariantWaypoints(
+  variants: RouteVariant[],
+  waypoints: Waypoint[]
+): RouteVariant[] {
+  if (waypoints.length === 0) return variants;
+
+  return variants.map(variant => {
+    if (variant.points.length === 0) return variant;
+
+    const visits = findWaypointVisits(waypoints, variant.points);
+    if (visits.length === 0) return variant;
+
+    const variantWaypoints: VariantWaypoint[] = [];
+    let prevTrackIndex = 0;
+    let runningDistance = 0;
+    let runningAscent = 0;
+    let runningDescent = 0;
+
+    for (const visit of visits) {
+      const segmentStats = calculateSegmentStats(variant.points, prevTrackIndex, visit.trackIndex);
+
+      runningDistance += segmentStats.distance;
+      runningAscent += segmentStats.ascent;
+      runningDescent += segmentStats.descent;
+
+      const trackPoint = variant.points[visit.trackIndex];
+
+      variantWaypoints.push({
+        name: visit.waypoint.name,
+        type: visit.waypoint.type,
+        lat: visit.waypoint.lat,
+        lon: visit.waypoint.lon,
+        elevation: Math.round(trackPoint.ele),
+        distance: Math.round(segmentStats.distance * 100) / 100,
+        totalDistance: Math.round(runningDistance * 100) / 100,
+        ascent: Math.round(segmentStats.ascent),
+        descent: Math.round(segmentStats.descent),
+        totalAscent: Math.round(runningAscent),
+        totalDescent: Math.round(runningDescent),
+        variantTrackIndex: visit.trackIndex,
+        description: visit.waypoint.description,
+      });
+
+      prevTrackIndex = visit.trackIndex;
+    }
+
+    return { ...variant, waypoints: variantWaypoints };
+  });
 }
 
 /**
@@ -936,6 +1008,10 @@ async function processTrail(trailDir: string, autoGenConfig: boolean = false): P
   const enrichedAlternates = findVariantJunctions(alternates, points);
   const enrichedSideTrips = findVariantJunctions(sideTrips, points);
 
+  // Enrich variants with waypoint data (which waypoints they pass through)
+  const alternatesWithWaypoints = enrichVariantWaypoints(enrichedAlternates, waypoints);
+  const sideTripsWithWaypoints = enrichVariantWaypoints(enrichedSideTrips, waypoints);
+
   return {
     config,
     track: {
@@ -946,8 +1022,8 @@ async function processTrail(trailDir: string, autoGenConfig: boolean = false): P
       totalDescent,
     },
     waypoints: enrichedWaypoints,
-    alternates: enrichedAlternates,
-    sideTrips: enrichedSideTrips,
+    alternates: alternatesWithWaypoints,
+    sideTrips: sideTripsWithWaypoints,
     climate,
     climateLocations: config.climateLocations || null,
     direction: config.direction || null,

@@ -27,6 +27,22 @@ interface Waypoint {
   trackIndex?: number;
 }
 
+interface VariantWaypoint {
+  name: string;
+  type: string;
+  lat: number;
+  lon: number;
+  elevation: number;
+  distance: number;
+  totalDistance: number;
+  ascent: number;
+  descent: number;
+  totalAscent: number;
+  totalDescent: number;
+  variantTrackIndex: number;
+  description?: string;
+}
+
 interface RouteVariant {
   name: string;
   type: 'alternate' | 'side-trip';
@@ -35,6 +51,7 @@ interface RouteVariant {
   endDistance?: number;
   elevation?: { ascent?: number; descent?: number };
   points?: TrackPoint[];
+  waypoints?: VariantWaypoint[];
 }
 
 interface DirectionConfig {
@@ -70,6 +87,8 @@ let displayPoints: TrackPoint[] = [];
 let maxDistance = 0;
 let waypointMarkers: Array<{ marker: L.Marker; waypoint: Waypoint; index: number }> = [];
 let expandedWaypointIndex: number | null = null;
+let expandedVariantKey: string | null = null;
+let expandedVariantWaypointIndex: number | null = null;
 
 // Trail direction state management
 const trailState = {
@@ -391,6 +410,12 @@ function toggleWaypointExpansion(waypointIndex: number): void {
     collapseWaypointDetail(waypointIndex);
     expandedWaypointIndex = null;
   } else {
+    // Collapse any expanded variant
+    if (expandedVariantKey !== null) {
+      collapseVariantDetail(expandedVariantKey);
+      expandedVariantKey = null;
+      expandedVariantWaypointIndex = null;
+    }
     if (expandedWaypointIndex !== null) {
       collapseWaypointDetail(expandedWaypointIndex);
     }
@@ -453,6 +478,239 @@ function collapseWaypointDetail(waypointIndex: number): void {
   if (detailRow) {
     detailRow.remove();
   }
+}
+
+// === Variant Expansion Functions ===
+
+function findVariantByKey(key: string, trail: Trail): RouteVariant | null {
+  for (const v of trail.alternates || []) {
+    const vKey = `${v.type}-${v.name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
+    if (vKey === key) return v;
+  }
+  for (const v of trail.sideTrips || []) {
+    const vKey = `${v.type}-${v.name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
+    if (vKey === key) return v;
+  }
+  return null;
+}
+
+function toggleVariantExpansion(variantKey: string): void {
+  if (expandedVariantKey === variantKey) {
+    collapseVariantDetail(variantKey);
+    expandedVariantKey = null;
+    expandedVariantWaypointIndex = null;
+  } else {
+    // Collapse any expanded waypoint
+    if (expandedWaypointIndex !== null) {
+      collapseWaypointDetail(expandedWaypointIndex);
+      expandedWaypointIndex = null;
+    }
+    // Collapse any previously expanded variant
+    if (expandedVariantKey !== null) {
+      collapseVariantDetail(expandedVariantKey);
+    }
+    const trail = trailState.currentTrail;
+    if (!trail) return;
+    const variant = findVariantByKey(variantKey, trail);
+    if (variant) {
+      expandVariantDetail(variantKey, variant);
+      expandedVariantKey = variantKey;
+      expandedVariantWaypointIndex = null;
+    }
+  }
+}
+
+function expandVariantDetail(variantKey: string, variant: RouteVariant): void {
+  const row = document.querySelector(`tr[data-variant-key="${variantKey}"]`) as HTMLElement;
+  if (!row) return;
+
+  row.classList.add('variant-expanded');
+  row.setAttribute('aria-expanded', 'true');
+  const chevron = row.querySelector('.expand-chevron');
+  if (chevron) chevron.classList.add('expanded');
+
+  const headerCells = document.querySelectorAll('.waypoints-table thead th');
+  const colspan = headerCells.length || 9;
+
+  const typeClass = variant.type === 'side-trip' ? 'type-side-trip' : '';
+  const wps = variant.waypoints || [];
+
+  // Stats line
+  const branchLabel = variant.type === 'alternate' ? 'Branches' : 'Starts';
+  let statsHtml = `<span class="variant-stat"><strong>Distance:</strong> ${variant.distance} km</span>`;
+  statsHtml += `<span class="variant-stat"><strong>Elevation:</strong> +${variant.elevation?.ascent || 0}m / -${variant.elevation?.descent || 0}m</span>`;
+  if (variant.startDistance != null) {
+    statsHtml += `<span class="variant-stat"><strong>${branchLabel} at:</strong> ${variant.startDistance.toFixed(1)} km</span>`;
+  }
+  if (variant.type === 'alternate' && variant.endDistance != null) {
+    statsHtml += `<span class="variant-stat"><strong>Rejoins:</strong> ${variant.endDistance.toFixed(1)} km</span>`;
+  }
+
+  // Waypoints table
+  let waypointsHtml: string;
+  if (wps.length > 0) {
+    const wpRows = wps.map((wp, i) => {
+      const descIndicator = wp.description
+        ? ' <span class="has-description-indicator" title="Has additional info"></span>'
+        : '';
+      return `
+        <tr class="variant-waypoint-row" data-variant-key="${escapeHtml(variantKey)}" data-variant-wp-index="${i}"
+            tabindex="0" role="button" aria-expanded="false">
+          <td><span class="expand-chevron">&#9654;</span> ${escapeHtml(wp.name)}${descIndicator}</td>
+          <td><span class="waypoint-type">${escapeHtml(wp.type)}</span></td>
+          <td class="numeric">${wp.elevation}</td>
+          <td class="numeric">${wp.distance.toFixed(1)}</td>
+          <td class="numeric">${wp.totalDistance.toFixed(1)}</td>
+          <td class="numeric">+${wp.ascent}</td>
+          <td class="numeric">-${wp.descent}</td>
+        </tr>
+      `;
+    }).join('');
+
+    waypointsHtml = `
+      <div class="variant-waypoints">
+        <h4>Waypoints on this route (${wps.length})</h4>
+        <table class="variant-waypoints-table">
+          <thead>
+            <tr>
+              <th>Location</th>
+              <th>Type</th>
+              <th>Elev (m)</th>
+              <th>Dist (km)</th>
+              <th>Total (km)</th>
+              <th>Gain</th>
+              <th>Loss</th>
+            </tr>
+          </thead>
+          <tbody>${wpRows}</tbody>
+        </table>
+      </div>
+    `;
+  } else {
+    waypointsHtml = '<p class="variant-no-waypoints">No waypoints on this route</p>';
+  }
+
+  // Show on map button
+  const showOnMapHtml = `<a href="#" class="variant-show-on-map" data-variant-key="${escapeHtml(variantKey)}">Show on map</a>`;
+
+  const detailHtml = `
+    <tr class="variant-detail-row" id="variant-detail-${escapeHtml(variantKey)}">
+      <td colspan="${colspan}">
+        <div class="variant-detail-panel ${typeClass}">
+          <div class="variant-header">
+            <div class="variant-headline-stats">${statsHtml}</div>
+            ${showOnMapHtml}
+          </div>
+          ${waypointsHtml}
+        </div>
+      </td>
+    </tr>
+  `;
+
+  row.insertAdjacentHTML('afterend', detailHtml);
+}
+
+function collapseVariantDetail(variantKey: string): void {
+  const row = document.querySelector(`tr[data-variant-key="${variantKey}"].variant-expandable`) as HTMLElement;
+  if (row) {
+    row.classList.remove('variant-expanded');
+    row.setAttribute('aria-expanded', 'false');
+    const chevron = row.querySelector('.expand-chevron');
+    if (chevron) chevron.classList.remove('expanded');
+  }
+  const detailRow = document.getElementById(`variant-detail-${variantKey}`);
+  if (detailRow) detailRow.remove();
+}
+
+function toggleVariantWaypointExpansion(variantKey: string, wpIndex: number): void {
+  if (expandedVariantWaypointIndex === wpIndex) {
+    collapseVariantWaypointDetail(variantKey, wpIndex);
+    expandedVariantWaypointIndex = null;
+  } else {
+    if (expandedVariantWaypointIndex !== null) {
+      collapseVariantWaypointDetail(variantKey, expandedVariantWaypointIndex);
+    }
+    const trail = trailState.currentTrail;
+    if (!trail) return;
+    const variant = findVariantByKey(variantKey, trail);
+    const wp = variant?.waypoints?.[wpIndex];
+    if (wp) {
+      expandVariantWaypointDetail(variantKey, wpIndex, wp);
+      expandedVariantWaypointIndex = wpIndex;
+    }
+  }
+}
+
+function expandVariantWaypointDetail(variantKey: string, wpIndex: number, wp: VariantWaypoint): void {
+  const row = document.querySelector(
+    `tr.variant-waypoint-row[data-variant-key="${variantKey}"][data-variant-wp-index="${wpIndex}"]`
+  ) as HTMLElement;
+  if (!row) return;
+
+  row.classList.add('waypoint-expanded');
+  row.setAttribute('aria-expanded', 'true');
+  const chevron = row.querySelector('.expand-chevron');
+  if (chevron) chevron.classList.add('expanded');
+
+  const colspan = 7; // variant waypoints table has 7 columns
+  const hasDesc = !!wp.description;
+  const descHtml = hasDesc
+    ? `<div class="waypoint-detail-description">${autoLinkUrls(wp.description!)}</div>`
+    : '';
+  const coordsHtml = `<span class="waypoint-detail-coords">${wp.lat.toFixed(5)}, ${wp.lon.toFixed(5)} · <a href="https://www.google.com/maps?q=${wp.lat},${wp.lon}" target="_blank" rel="noopener noreferrer">Google Maps</a></span>`;
+
+  const detailHtml = `
+    <tr class="variant-wp-detail-row" id="variant-wp-detail-${escapeHtml(variantKey)}-${wpIndex}">
+      <td colspan="${colspan}">
+        <div class="waypoint-detail-panel${hasDesc ? '' : ' no-description'}">
+          ${descHtml}
+          <div class="waypoint-detail-actions">
+            <a href="#" class="variant-wp-show-on-map" data-variant-key="${escapeHtml(variantKey)}" data-variant-wp-index="${wpIndex}">Show on map</a>
+            ${coordsHtml}
+          </div>
+        </div>
+      </td>
+    </tr>
+  `;
+
+  row.insertAdjacentHTML('afterend', detailHtml);
+}
+
+function collapseVariantWaypointDetail(variantKey: string, wpIndex: number): void {
+  const row = document.querySelector(
+    `tr.variant-waypoint-row[data-variant-key="${variantKey}"][data-variant-wp-index="${wpIndex}"]`
+  ) as HTMLElement;
+  if (row) {
+    row.classList.remove('waypoint-expanded');
+    row.setAttribute('aria-expanded', 'false');
+    const chevron = row.querySelector('.expand-chevron');
+    if (chevron) chevron.classList.remove('expanded');
+  }
+  const detailRow = document.getElementById(`variant-wp-detail-${variantKey}-${wpIndex}`);
+  if (detailRow) detailRow.remove();
+}
+
+function handleVariantShowOnMap(variantKey: string): void {
+  if (!map) return;
+  const trail = trailState.currentTrail;
+  if (!trail) return;
+  const variant = findVariantByKey(variantKey, trail);
+  if (!variant?.points || variant.points.length === 0) return;
+
+  const bounds = L.latLngBounds(variant.points.map(p => [p.lat, p.lon] as [number, number]));
+  map.fitBounds(bounds, { padding: [40, 40] });
+}
+
+function handleVariantWaypointShowOnMap(variantKey: string, wpIndex: number): void {
+  if (!map) return;
+  const trail = trailState.currentTrail;
+  if (!trail) return;
+  const variant = findVariantByKey(variantKey, trail);
+  const wp = variant?.waypoints?.[wpIndex];
+  if (!wp) return;
+
+  const targetZoom = Math.max(map.getZoom(), 14);
+  map.setView([wp.lat, wp.lon], targetZoom);
 }
 
 function setupElevationHover(): void {
@@ -685,6 +943,10 @@ function renderWaypoints(waypoints: Waypoint[] | undefined, alternates: RouteVar
     `;
   }
 
+  function makeVariantKey(variant: RouteVariant): string {
+    return `${variant.type}-${variant.name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
+  }
+
   function renderVariantRow(variant: RouteVariant, isStart: boolean): string {
     const typeClass = variant.type === 'alternate' ? 'type-alternate' : 'type-side-trip';
     const typeLabel = variant.type === 'alternate' ? 'Alternate' : 'Side Trip';
@@ -693,12 +955,24 @@ function renderWaypoints(waypoints: Waypoint[] | undefined, alternates: RouteVar
       : 'rejoins';
     const distance = isStart ? variant.startDistance : variant.endDistance;
 
+    const variantKey = makeVariantKey(variant);
+    const hasWaypoints = (variant.waypoints?.length ?? 0) > 0;
+    const isExpandable = isStart;
+    const expandableAttrs = isExpandable
+      ? `data-variant-key="${escapeHtml(variantKey)}" tabindex="0" role="button" aria-expanded="false"`
+      : '';
+    const expandableClass = isExpandable ? ' variant-expandable' : '';
+    const chevronHtml = isExpandable ? '<span class="expand-chevron">&#9654;</span> ' : '';
+    const waypointDot = isExpandable && hasWaypoints
+      ? ` <span class="has-waypoints-indicator" title="Has waypoints"></span>`
+      : '';
+
     return `
-      <tr class="variant-row ${typeClass}">
+      <tr class="variant-row ${typeClass}${expandableClass}" ${expandableAttrs}>
         <td colspan="2">
           <span class="variant-marker ${typeClass}">
-            <span class="variant-icon">${isStart ? '\u2197' : '\u2198'}</span>
-            <strong>${variant.name}</strong>
+            ${chevronHtml}<span class="variant-icon">${isStart ? '\u2197' : '\u2198'}</span>
+            <strong>${escapeHtml(variant.name)}</strong>${waypointDot}
             <span class="variant-action">${actionLabel} here</span>
           </span>
         </td>
@@ -981,6 +1255,8 @@ function getReversedTrail(): Trail {
 
 function refreshDisplay(trail: Trail): void {
   expandedWaypointIndex = null;
+  expandedVariantKey = null;
+  expandedVariantWaypointIndex = null;
   trackPoints = trail.track.points;
   displayPoints = trail.track.displayPoints || trail.track.points;
   maxDistance = trail.track.totalDistance;
@@ -1097,10 +1373,38 @@ export async function initTrailViewer(trailId: string): Promise<void> {
   document.querySelector('.waypoints-table tbody')?.addEventListener('click', (e) => {
     const target = e.target as HTMLElement;
 
-    // Handle "Show on map" link clicks in detail panels
+    // Handle "Show on map" link clicks in waypoint detail panels
     if (target.classList.contains('waypoint-show-on-map')) {
       e.preventDefault();
       handleTableRowClick(parseInt(target.dataset.waypointIndex!, 10));
+      return;
+    }
+
+    // Handle variant "Show on map" link clicks
+    if (target.classList.contains('variant-show-on-map')) {
+      e.preventDefault();
+      handleVariantShowOnMap(target.dataset.variantKey!);
+      return;
+    }
+
+    // Handle variant waypoint "Show on map" link clicks
+    if (target.classList.contains('variant-wp-show-on-map')) {
+      e.preventDefault();
+      handleVariantWaypointShowOnMap(target.dataset.variantKey!, parseInt(target.dataset.variantWpIndex!, 10));
+      return;
+    }
+
+    // Handle variant waypoint row clicks (nested inside variant detail)
+    const variantWpRow = target.closest('tr.variant-waypoint-row') as HTMLElement;
+    if (variantWpRow) {
+      toggleVariantWaypointExpansion(variantWpRow.dataset.variantKey!, parseInt(variantWpRow.dataset.variantWpIndex!, 10));
+      return;
+    }
+
+    // Handle variant row clicks for expand/collapse
+    const variantRow = target.closest('tr.variant-expandable') as HTMLElement;
+    if (variantRow) {
+      toggleVariantExpansion(variantRow.dataset.variantKey!);
       return;
     }
 
@@ -1111,11 +1415,30 @@ export async function initTrailViewer(trailId: string): Promise<void> {
     }
   });
 
-  // Keyboard accessibility for waypoint rows
+  // Keyboard accessibility for waypoint and variant rows
   document.querySelector('.waypoints-table tbody')?.addEventListener('keydown', (e: Event) => {
     const keyEvent = e as KeyboardEvent;
     if (keyEvent.key === 'Enter' || keyEvent.key === ' ') {
-      const row = (e.target as HTMLElement).closest('tr[data-waypoint-index]');
+      const target = e.target as HTMLElement;
+
+      // Variant waypoint rows
+      const variantWpRow = target.closest('tr.variant-waypoint-row') as HTMLElement;
+      if (variantWpRow) {
+        e.preventDefault();
+        toggleVariantWaypointExpansion(variantWpRow.dataset.variantKey!, parseInt(variantWpRow.dataset.variantWpIndex!, 10));
+        return;
+      }
+
+      // Variant expandable rows
+      const variantRow = target.closest('tr.variant-expandable') as HTMLElement;
+      if (variantRow) {
+        e.preventDefault();
+        toggleVariantExpansion(variantRow.dataset.variantKey!);
+        return;
+      }
+
+      // Main waypoint rows
+      const row = target.closest('tr[data-waypoint-index]');
       if (row) {
         e.preventDefault();
         toggleWaypointExpansion(parseInt((row as HTMLElement).dataset.waypointIndex!, 10));
