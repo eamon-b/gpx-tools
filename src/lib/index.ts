@@ -24,11 +24,6 @@ export type {
   OptimizationResult,
   OptimizationStats,
   BatchOptimizationStats,
-  TrackClassificationConfig,
-  ClassifiedTrack,
-  TrackClassificationResult,
-  CombineTracksResult,
-  CombineTracksWarning,
 } from './types';
 
 // GPX Parser
@@ -80,18 +75,3 @@ export {
   GPX_OPTIMIZER_DEFAULTS,
 } from './gpx-optimizer';
 
-// Track Classification
-export {
-  classifyTracks,
-  combineTracksGeographically,
-  TRACK_CLASSIFICATION_DEFAULTS,
-} from './track-classification';
-
-// Waypoint Classification
-export type { ClassificationResult, WaypointPrefixRule } from './waypoint-classifier';
-export {
-  classifyWaypoint,
-  FOLDER_TYPE_MAP,
-  DEFAULT_PREFIX_RULES,
-  KNOWN_TOWNS,
-} from './waypoint-classifier';

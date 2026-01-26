@@ -3,10 +3,6 @@ dist/
 *.log
 .DS_Store
 
-# Generated trail data (built from source)
-public/data/generated/
-src/web/trails/*/
-
 # Environment files
 .env
 .env.local
@@ -14,7 +10,3 @@ src/web/trails/*/
 
 # Vercel
 .vercel
-.env*.local
-
-.vercel
-.env*.local

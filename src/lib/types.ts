@@ -201,39 +201,3 @@ export interface BatchOptimizationStats {
   warnings: string[];
 }
 
-// Track Classification Types
-export interface TrackClassificationConfig {
-  mainRoutePatterns?: string[];     // Regex patterns for main route tracks
-  alternatePatterns?: string[];     // Regex patterns for alternate routes
-  sideTripPatterns?: string[];      // Regex patterns for side trips/spurs
-  ignorePatterns?: string[];        // Regex patterns to ignore completely
-  fallbackToLongest?: boolean;      // Use longest track if no patterns match (default: true)
-}
-
-export interface ClassifiedTrack {
-  name: string;
-  type: 'main' | 'alternate' | 'sideTrip' | 'ignored' | 'unclassified';
-  points: GpxPoint[];
-  distance: number;
-}
-
-export interface TrackClassificationResult {
-  mainTracks: ClassifiedTrack[];
-  alternateTracks: ClassifiedTrack[];
-  sideTripTracks: ClassifiedTrack[];
-  ignoredTracks: ClassifiedTrack[];
-  unclassifiedTracks: ClassifiedTrack[];
-}
-
-export interface CombineTracksWarning {
-  type: 'gap';
-  fromTrack: string;
-  toTrack: string;
-  gapMeters: number;
-}
-
-export interface CombineTracksResult {
-  combinedPoints: GpxPoint[];
-  orderedNames: string[];
-  warnings: CombineTracksWarning[];
-}

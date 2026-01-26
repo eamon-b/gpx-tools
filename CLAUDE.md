@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 npm install          # Install dependencies
 npm run dev          # Start Vite dev server (static site only, port 5173)
-npm run build        # Full production build (trails + TS compile + Vite)
+npm run build        # Production build (TS compile + Vite)
 npm test             # Run all tests with Vitest
 npm test -- --watch  # Watch mode
 npm test -- src/lib/distance.test.ts  # Run specific test file
@@ -17,11 +17,10 @@ vercel dev           # Run with serverless functions (requires Vercel CLI)
 
 ## Architecture Overview
 
-**GPX Tools** is a TypeScript web application for GPS/trail data processing with three entry points:
+**GPX Tools** is a TypeScript web application for GPS route processing with two entry points:
 
 1. **Web UI** (`src/web/`) - Vanilla TypeScript client-side tools built with Vite
 2. **Serverless API** (`src/api/`) - Vercel functions for POI queries and elevation data
-3. **Build Scripts** (`scripts/`) - Trail data processing run at build time with tsx
 
 ### Core Library (`src/lib/`)
 
@@ -58,7 +57,6 @@ API features: CORS (configured via `ALLOWED_ORIGINS` env), rate limiting (defaul
 - **Library-first**: Core logic in `src/lib/`, web and API consume it
 - **Type-driven**: Shared interfaces in `types.ts`
 - **Client-side processing**: Files processed in browser, only API calls for external data
-- **Build-time trail data**: `scripts/build-trails.ts` generates static trail pages
 
 ## Testing
 
