@@ -4,8 +4,8 @@
   "shortName": "Heysen",
   "region": "South Australia",
   "lengthKm": 39.6,
-  "gpxFile": "Heysen_Trail_20250515.gpx",
-  "description": "Trail data auto-generated from Heysen_Trail_20250515.gpx. Edit trail.json to customize.",
+  "gpxFile": "Heysen.gpx",
+  "description": "Trail data auto-generated from Heysen.gpx.",
   "trackClassification": {
     "mainRoutePatterns": ["^Map \\d+[A-D]$"],
     "alternatePatterns": ["Alternative", "Alternatve", "\\bAlt\\b"],
