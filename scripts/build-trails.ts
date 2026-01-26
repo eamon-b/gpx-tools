@@ -71,6 +71,7 @@ interface TrailConfig {
   gpxFile: string;
   geojsonFile?: string;  // CalTopo GeoJSON file for alternates/side trips
   trackClassification?: TrackClassificationConfig;  // Patterns for multi-track GPX classification
+  waypointMaxDistance?: number;  // Max distance (meters) from track to match waypoints (default 500)
   waypointsFile?: string;  // Now optional - can extract from GPX
   climateFile?: string;
   climateLocations?: ClimateLocationConfig[];
@@ -140,6 +141,10 @@ interface RouteVariant {
   waypoints?: VariantWaypoint[];
 }
 
+interface OffTrailWaypoint extends Waypoint {
+  distanceFromTrail: number;  // meters
+}
+
 interface ProcessedTrail {
   config: TrailConfig;
   track: {
@@ -150,6 +155,7 @@ interface ProcessedTrail {
     totalDescent: number;
   };
   waypoints: EnrichedWaypoint[];
+  offTrailWaypoints: OffTrailWaypoint[];
   alternates: RouteVariant[];
   sideTrips: RouteVariant[];
   climate: Record<string, unknown> | null;
@@ -258,7 +264,7 @@ function parseGpxNode(xml: string): ParsedGpxResult {
 function selectMainRoute(
   gpxData: ParsedGpxResult,
   config: TrailConfig
-): { points: GpxPoint[]; classificationSummary: string } {
+): { points: GpxPoint[]; classificationSummary: string; alternateTracks: ParsedGpxTrack[]; sideTripTracks: ParsedGpxTrack[] } {
   const classification = classifyTracks(
     gpxData.tracks.map(t => ({
       name: t.name,
@@ -276,9 +282,18 @@ function selectMainRoute(
   if (classification.unclassifiedTracks.length > 0) parts.push(`${classification.unclassifiedTracks.length} unclassified`);
   const classificationSummary = parts.length > 0 ? parts.join(', ') : 'no tracks';
 
+  const alternateTracks: ParsedGpxTrack[] = classification.alternateTracks.map(t => ({
+    name: t.name,
+    points: t.points.map(p => ({ lat: p.lat, lon: p.lon, ele: p.ele, time: p.time })),
+  }));
+  const sideTripTracks: ParsedGpxTrack[] = classification.sideTripTracks.map(t => ({
+    name: t.name,
+    points: t.points.map(p => ({ lat: p.lat, lon: p.lon, ele: p.ele, time: p.time })),
+  }));
+
   // No main tracks found
   if (classification.mainTracks.length === 0) {
-    return { points: [], classificationSummary };
+    return { points: [], classificationSummary, alternateTracks, sideTripTracks };
   }
 
   // Single main track - return directly
@@ -286,6 +301,8 @@ function selectMainRoute(
     return {
       points: classification.mainTracks[0].points,
       classificationSummary,
+      alternateTracks,
+      sideTripTracks,
     };
   }
 
@@ -301,7 +318,7 @@ function selectMainRoute(
 
   console.log(`  Combined ${orderedNames.length} tracks: ${orderedNames.slice(0, 3).join(', ')}${orderedNames.length > 3 ? '...' : ''}`);
 
-  return { points: combinedPoints, classificationSummary };
+  return { points: combinedPoints, classificationSummary, alternateTracks, sideTripTracks };
 }
 
 /**
@@ -495,13 +512,14 @@ function calculateSegmentStats(
  */
 function enrichWaypoints(
   waypoints: Waypoint[],
-  trackPoints: { lat: number; lon: number; ele: number }[]
+  trackPoints: { lat: number; lon: number; ele: number }[],
+  maxDistanceMeters: number = 500
 ): EnrichedWaypoint[] {
   if (trackPoints.length === 0 || waypoints.length === 0) {
     return [];
   }
 
-  const visits = findWaypointVisits(waypoints, trackPoints);
+  const visits = findWaypointVisits(waypoints, trackPoints, maxDistanceMeters);
 
   if (visits.length === 0) {
     return [];
@@ -878,7 +896,7 @@ async function processTrail(trailDir: string, autoGenConfig: boolean = false): P
   }
 
   // Select and combine main route tracks using classification
-  const { points: mainRoutePoints, classificationSummary } = selectMainRoute(gpxData, config);
+  const { points: mainRoutePoints, classificationSummary, alternateTracks, sideTripTracks: classifiedSideTrips } = selectMainRoute(gpxData, config);
   console.log(`  Classified: ${classificationSummary}`);
 
   // For auto-gen config, now generate the full config with distance calculated
@@ -964,12 +982,58 @@ async function processTrail(trailDir: string, autoGenConfig: boolean = false): P
     // Add alternates and side trips from GeoJSON
     if (caltopoData.alternates.length > 0) {
       alternates = caltopoData.alternates;
-      console.log(`  ✓ Found ${alternates.length} alternate routes`);
+      console.log(`  ✓ Found ${alternates.length} alternate routes from GeoJSON`);
     }
     if (caltopoData.sideTrips.length > 0) {
       sideTrips = caltopoData.sideTrips;
-      console.log(`  ✓ Found ${sideTrips.length} side trips`);
+      console.log(`  ✓ Found ${sideTrips.length} side trips from GeoJSON`);
     }
+  }
+
+  // Convert classified GPX alternate tracks to RouteVariant[], merging with GeoJSON variants
+  // GeoJSON takes precedence if names overlap
+  const geojsonAlternateNames = new Set(alternates.map(a => a.name.toLowerCase()));
+  for (const track of alternateTracks) {
+    if (!geojsonAlternateNames.has(track.name.toLowerCase())) {
+      const trackPoints3d = track.points.map(p => ({ lat: p.lat, lon: p.lon, ele: p.ele }));
+      const stats = calculateRouteStats(trackPoints3d);
+      alternates.push({
+        name: track.name,
+        type: 'alternate',
+        points: trackPoints3d,
+        distance: Math.round(stats.distance * 10) / 10,
+        elevation: {
+          ascent: Math.round(stats.ascent),
+          descent: Math.round(stats.descent),
+        },
+      });
+    }
+  }
+
+  // Convert classified GPX side-trip tracks to RouteVariant[]
+  const geojsonSideTripNames = new Set(sideTrips.map(s => s.name.toLowerCase()));
+  for (const track of classifiedSideTrips) {
+    if (!geojsonSideTripNames.has(track.name.toLowerCase())) {
+      const trackPoints3d = track.points.map(p => ({ lat: p.lat, lon: p.lon, ele: p.ele }));
+      const stats = calculateRouteStats(trackPoints3d);
+      sideTrips.push({
+        name: track.name,
+        type: 'side-trip',
+        points: trackPoints3d,
+        distance: Math.round(stats.distance * 10) / 10,
+        elevation: {
+          ascent: Math.round(stats.ascent),
+          descent: Math.round(stats.descent),
+        },
+      });
+    }
+  }
+
+  if (alternateTracks.length > 0 || classifiedSideTrips.length > 0) {
+    const gpxAlts = alternates.length - (geojsonAlternateNames.size);
+    const gpxSides = sideTrips.length - (geojsonSideTripNames.size);
+    if (gpxAlts > 0) console.log(`  ✓ Added ${gpxAlts} alternate routes from GPX tracks`);
+    if (gpxSides > 0) console.log(`  ✓ Added ${gpxSides} side trips from GPX tracks`);
   }
 
   // Fall back to CSV waypoints if no GPX waypoints and CSV exists
@@ -1002,7 +1066,8 @@ async function processTrail(trailDir: string, autoGenConfig: boolean = false): P
   config.lengthKm = Math.round(totalDistance * 10) / 10;
 
   // Enrich waypoints with distance and elevation data
-  const enrichedWaypoints = enrichWaypoints(waypoints, mainRoutePoints);
+  const waypointMaxDist = config.waypointMaxDistance ?? 500;
+  const enrichedWaypoints = enrichWaypoints(waypoints, mainRoutePoints, waypointMaxDist);
 
   // Enrich variants with junction point data (where they connect to main track)
   const enrichedAlternates = findVariantJunctions(alternates, points);
@@ -1011,6 +1076,19 @@ async function processTrail(trailDir: string, autoGenConfig: boolean = false): P
   // Enrich variants with waypoint data (which waypoints they pass through)
   const alternatesWithWaypoints = enrichVariantWaypoints(enrichedAlternates, waypoints);
   const sideTripsWithWaypoints = enrichVariantWaypoints(enrichedSideTrips, waypoints);
+
+  // Identify off-trail waypoints (not matched even at the increased threshold)
+  const matchedNames = new Set(enrichedWaypoints.map(ew => `${ew.name}|${ew.lat}|${ew.lon}`));
+  const offTrailWaypoints: OffTrailWaypoint[] = waypoints
+    .filter(wp => !matchedNames.has(`${wp.name}|${wp.lat}|${wp.lon}`))
+    .map(wp => {
+      const { distanceFromTrack } = findNearestTrackPoint(wp, points);
+      return { ...wp, distanceFromTrail: Math.round(distanceFromTrack) };
+    });
+
+  if (offTrailWaypoints.length > 0) {
+    console.log(`  ✓ ${offTrailWaypoints.length} off-trail waypoints (beyond ${waypointMaxDist}m threshold)`);
+  }
 
   return {
     config,
@@ -1022,6 +1100,7 @@ async function processTrail(trailDir: string, autoGenConfig: boolean = false): P
       totalDescent,
     },
     waypoints: enrichedWaypoints,
+    offTrailWaypoints,
     alternates: alternatesWithWaypoints,
     sideTrips: sideTripsWithWaypoints,
     climate,
@@ -1161,7 +1240,7 @@ async function main() {
       console.log(`  ✓ Written to ${outputPath}`);
       console.log(`    Distance: ${processed.track.totalDistance.toFixed(1)} km`);
       console.log(`    Elevation: +${Math.round(processed.track.totalAscent)}m / -${Math.round(processed.track.totalDescent)}m`);
-      console.log(`    Waypoints: ${processed.waypoints.length}`);
+      console.log(`    Waypoints: ${processed.waypoints.length} on-trail, ${processed.offTrailWaypoints.length} off-trail`);
 
       // Generate HTML pages for this trail
       generateTrailPage(processed);

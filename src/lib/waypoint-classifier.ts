@@ -32,12 +32,16 @@ export const FOLDER_TYPE_MAP: Record<string, string> = {
   // Huts/Shelters
   'huts': 'hut',
   'shelters': 'hut',
+  'huts & shelters': 'hut',
   // Water
+  'water': 'water',
   'water sources': 'water',
   'water tanks': 'water-tank',
   // Towns/Resupply
   'towns': 'town',
   'resupply': 'resupply',
+  // Accommodation
+  'accommodation': 'accommodation',
   // Transport/Access
   'trailheads': 'trailhead',
   'caravan parks': 'caravan-park',
@@ -53,6 +57,7 @@ export const FOLDER_TYPE_MAP: Record<string, string> = {
   'places of interest': 'poi',
   'sights': 'poi',
   'inlets': 'poi',
+  'other': 'poi',
 };
 
 /**

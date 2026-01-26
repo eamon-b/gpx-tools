@@ -11,11 +11,15 @@ describe('waypoint-classifier', () => {
     it('should have mappings for common folder names', () => {
       expect(FOLDER_TYPE_MAP['campsites']).toBe('campsite');
       expect(FOLDER_TYPE_MAP['huts']).toBe('hut');
+      expect(FOLDER_TYPE_MAP['huts & shelters']).toBe('hut');
+      expect(FOLDER_TYPE_MAP['water']).toBe('water');
       expect(FOLDER_TYPE_MAP['water sources']).toBe('water');
       expect(FOLDER_TYPE_MAP['water tanks']).toBe('water-tank');
       expect(FOLDER_TYPE_MAP['towns']).toBe('town');
+      expect(FOLDER_TYPE_MAP['accommodation']).toBe('accommodation');
       expect(FOLDER_TYPE_MAP['trailheads']).toBe('trailhead');
       expect(FOLDER_TYPE_MAP['caravan parks']).toBe('caravan-park');
+      expect(FOLDER_TYPE_MAP['other']).toBe('poi');
     });
   });
 
@@ -62,9 +66,13 @@ describe('waypoint-classifier', () => {
         expect(classifyWaypoint('X', { folderName: 'Official campsites' }).type).toBe('campsite');
         expect(classifyWaypoint('X', { folderName: 'Other campsites' }).type).toBe('campsite');
         expect(classifyWaypoint('X', { folderName: 'Huts' }).type).toBe('hut');
+        expect(classifyWaypoint('X', { folderName: 'Huts & Shelters' }).type).toBe('hut');
+        expect(classifyWaypoint('X', { folderName: 'Water' }).type).toBe('water');
         expect(classifyWaypoint('X', { folderName: 'Water Tanks' }).type).toBe('water-tank');
         expect(classifyWaypoint('X', { folderName: 'Trailheads' }).type).toBe('trailhead');
         expect(classifyWaypoint('X', { folderName: 'Caravan Parks' }).type).toBe('caravan-park');
+        expect(classifyWaypoint('X', { folderName: 'Accommodation' }).type).toBe('accommodation');
+        expect(classifyWaypoint('X', { folderName: 'Other' }).type).toBe('poi');
       });
 
       it('should clean prefix from name even when folder determines type', () => {
@@ -270,7 +278,21 @@ describe('waypoint-classifier', () => {
         { name: 'Mt Hotham', folder: undefined, expectedType: 'town', expectedCleanName: 'Mt Hotham' },
       ];
 
-      for (const t of [...larapintaTests, ...aawtTests]) {
+      // Heysen examples
+      const heysenTests: Array<{
+        name: string;
+        folder: string | undefined;
+        expectedType: string;
+        expectedCleanName: string;
+      }> = [
+        { name: 'North Laura Hotel', folder: 'Accommodation', expectedType: 'accommodation', expectedCleanName: 'North Laura Hotel' },
+        { name: 'Mylor Oval tank', folder: 'Water', expectedType: 'water', expectedCleanName: 'Mylor Oval tank' },
+        { name: 'Rocky Creek Hut', folder: 'Huts & Shelters', expectedType: 'hut', expectedCleanName: 'Rocky Creek Hut' },
+        { name: 'Hawker', folder: 'Towns', expectedType: 'town', expectedCleanName: 'Hawker' },
+        { name: 'Rest area', folder: 'Other', expectedType: 'poi', expectedCleanName: 'Rest area' },
+      ];
+
+      for (const t of [...larapintaTests, ...aawtTests, ...heysenTests]) {
         it(`"${t.name}" with folder "${t.folder}" -> type: ${t.expectedType}, name: "${t.expectedCleanName}"`, () => {
           const result = classifyWaypoint(t.name, { folderName: t.folder });
           expect(result.type).toBe(t.expectedType);

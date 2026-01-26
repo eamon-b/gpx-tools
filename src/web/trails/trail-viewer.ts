@@ -59,6 +59,15 @@ interface DirectionConfig {
   reversed: string;
 }
 
+interface OffTrailWaypoint {
+  name: string;
+  lat: number;
+  lon: number;
+  type?: string;
+  description?: string;
+  distanceFromTrail: number;  // meters
+}
+
 interface Trail {
   config: {
     id: string;
@@ -74,6 +83,7 @@ interface Trail {
     totalDescent: number;
   };
   waypoints?: Waypoint[];
+  offTrailWaypoints?: OffTrailWaypoint[];
   alternates?: RouteVariant[];
   sideTrips?: RouteVariant[];
 }
@@ -86,6 +96,7 @@ let trackPoints: TrackPoint[] = [];
 let displayPoints: TrackPoint[] = [];
 let maxDistance = 0;
 let waypointMarkers: Array<{ marker: L.Marker; waypoint: Waypoint; index: number }> = [];
+let offTrailMarkers: L.Marker[] = [];
 let expandedWaypointIndex: number | null = null;
 let expandedVariantKey: string | null = null;
 let expandedVariantWaypointIndex: number | null = null;
@@ -110,6 +121,7 @@ const WAYPOINT_ICONS: Record<string, { icon: string }> = {
   'water-tank': { icon: '\u{1F6B0}' },
   mountain: { icon: '\u26F0\u{FE0F}' },
   'side-trip': { icon: '\u{1F97E}' },
+  accommodation: { icon: '\u{1F3E8}' },
   'caravan-park': { icon: '\u{1F3D5}\u{FE0F}' },
   'trail-head': { icon: '\u{1F697}' },
   food: { icon: '\u{1F374}' },
@@ -224,6 +236,7 @@ function initMap(trail: Trail): void {
     drawAlternates(trail.alternates || []);
     drawSideTrips(trail.sideTrips || []);
     drawWaypointMarkers(trail.waypoints || []);
+    drawOffTrailWaypointMarkers(trail.offTrailWaypoints || []);
 
     hoverMarker = L.marker([0, 0], {
       icon: L.divIcon({
@@ -317,6 +330,25 @@ function drawWaypointMarkers(waypoints: Waypoint[]): void {
   });
 }
 
+function drawOffTrailWaypointMarkers(waypoints: OffTrailWaypoint[]): void {
+  offTrailMarkers.forEach(m => { if (map && map.hasLayer(m)) map.removeLayer(m); });
+  offTrailMarkers = [];
+  if (!waypoints || waypoints.length === 0) return;
+
+  waypoints.forEach(wp => {
+    const marker = L.marker([wp.lat, wp.lon], {
+      icon: createWaypointIcon(wp.type),
+      opacity: 0.5
+    }).addTo(map!).bindPopup(`
+      <strong>${escapeHtml(wp.name || 'Waypoint')}</strong><br>
+      ${escapeHtml(wp.type || 'waypoint')}<br>
+      ${(wp.distanceFromTrail / 1000).toFixed(1)} km from trail
+    `);
+
+    offTrailMarkers.push(marker);
+  });
+}
+
 function fitMapToBounds(trail: Trail): void {
   const bounds = L.latLngBounds([]);
 
@@ -330,6 +362,8 @@ function fitMapToBounds(trail: Trail): void {
   (trail.sideTrips || []).forEach(trip => {
     (trip.points || []).forEach(p => bounds.extend([p.lat, p.lon]));
   });
+
+  (trail.offTrailWaypoints || []).forEach(wp => bounds.extend([wp.lat, wp.lon]));
 
   map!.fitBounds(bounds, { padding: [20, 20] });
 }
@@ -713,6 +747,95 @@ function collapseVariantWaypointDetail(variantKey: string, wpIndex: number): voi
   if (detailRow) detailRow.remove();
 }
 
+// === Off-Trail Waypoint Expansion Functions ===
+
+let expandedOffTrailIndex: number | null = null;
+
+function toggleOffTrailExpansion(index: number): void {
+  if (expandedOffTrailIndex === index) {
+    collapseOffTrailDetail(index);
+    expandedOffTrailIndex = null;
+  } else {
+    // Collapse any expanded main waypoint or variant
+    if (expandedWaypointIndex !== null) {
+      collapseWaypointDetail(expandedWaypointIndex);
+      expandedWaypointIndex = null;
+    }
+    if (expandedVariantKey !== null) {
+      collapseVariantDetail(expandedVariantKey);
+      expandedVariantKey = null;
+      expandedVariantWaypointIndex = null;
+    }
+    if (expandedOffTrailIndex !== null) {
+      collapseOffTrailDetail(expandedOffTrailIndex);
+    }
+    const trail = trailState.currentTrail;
+    const wp = trail?.offTrailWaypoints?.[index];
+    if (wp) {
+      expandOffTrailDetail(index, wp);
+      expandedOffTrailIndex = index;
+    }
+  }
+}
+
+function expandOffTrailDetail(index: number, wp: OffTrailWaypoint): void {
+  const row = document.getElementById(`off-trail-row-${index}`);
+  if (!row) return;
+
+  row.classList.add('waypoint-expanded');
+  row.setAttribute('aria-expanded', 'true');
+  const chevron = row.querySelector('.expand-chevron');
+  if (chevron) chevron.classList.add('expanded');
+
+  const headerCells = document.querySelectorAll('.waypoints-table thead th');
+  const colspan = headerCells.length || 9;
+
+  const hasDesc = !!wp.description;
+  const descHtml = hasDesc
+    ? `<div class="waypoint-detail-description">${autoLinkUrls(wp.description!)}</div>`
+    : '';
+  const coordsHtml = `<span class="waypoint-detail-coords">${wp.lat.toFixed(5)}, ${wp.lon.toFixed(5)} · <a href="https://www.google.com/maps?q=${wp.lat},${wp.lon}" target="_blank" rel="noopener noreferrer">Google Maps</a></span>`;
+
+  const detailHtml = `
+    <tr class="waypoint-detail-row" id="off-trail-detail-${index}">
+      <td colspan="${colspan}">
+        <div class="waypoint-detail-panel${hasDesc ? '' : ' no-description'}">
+          ${descHtml}
+          <div class="waypoint-detail-actions">
+            <a href="#" class="off-trail-show-on-map" data-off-trail-index="${index}">Show on map</a>
+            ${coordsHtml}
+          </div>
+        </div>
+      </td>
+    </tr>
+  `;
+
+  row.insertAdjacentHTML('afterend', detailHtml);
+}
+
+function collapseOffTrailDetail(index: number): void {
+  const row = document.getElementById(`off-trail-row-${index}`);
+  if (row) {
+    row.classList.remove('waypoint-expanded');
+    row.setAttribute('aria-expanded', 'false');
+    const chevron = row.querySelector('.expand-chevron');
+    if (chevron) chevron.classList.remove('expanded');
+  }
+  const detailRow = document.getElementById(`off-trail-detail-${index}`);
+  if (detailRow) detailRow.remove();
+}
+
+function handleOffTrailShowOnMap(index: number): void {
+  if (!map) return;
+  const trail = trailState.currentTrail;
+  const wp = trail?.offTrailWaypoints?.[index];
+  if (!wp) return;
+
+  document.getElementById('trail-map')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  const targetZoom = Math.max(map.getZoom(), 14);
+  map.setView([wp.lat, wp.lon], targetZoom);
+}
+
 function handleVariantShowOnMap(variantKey: string): void {
   if (!map) return;
   const trail = trailState.currentTrail;
@@ -922,10 +1045,10 @@ function drawElevationProfile(points: TrackPoint[]): void {
   ctx.fill();
 }
 
-function renderWaypoints(waypoints: Waypoint[] | undefined, alternates: RouteVariant[] | undefined, sideTrips: RouteVariant[] | undefined): void {
+function renderWaypoints(waypoints: Waypoint[] | undefined, alternates: RouteVariant[] | undefined, sideTrips: RouteVariant[] | undefined, offTrailWaypoints?: OffTrailWaypoint[]): void {
   const container = document.getElementById('waypoints-container')!;
 
-  if (!waypoints || waypoints.length === 0) {
+  if ((!waypoints || waypoints.length === 0) && (!offTrailWaypoints || offTrailWaypoints.length === 0)) {
     container.innerHTML = '<p>No waypoints defined</p>';
     return;
   }
@@ -952,6 +1075,7 @@ function renderWaypoints(waypoints: Waypoint[] | undefined, alternates: RouteVar
       'water-tank': 'type-water-tank',
       'mountain': 'type-mountain',
       'side-trip': 'type-side-trip',
+      'accommodation': 'type-accommodation',
       'caravan-park': 'type-caravan-park',
       'trail-head': 'type-trail-head',
       'food': 'type-food',
@@ -970,7 +1094,7 @@ function renderWaypoints(waypoints: Waypoint[] | undefined, alternates: RouteVar
   const allVariants = [...(alternates || []), ...(sideTrips || [])];
   const tableRows: TableRow[] = [];
 
-  waypoints.forEach((wp, waypointIndex) => {
+  (waypoints || []).forEach((wp, waypointIndex) => {
     tableRows.push({
       rowType: 'waypoint',
       distance: wp.totalDistance ?? 0,
@@ -1069,6 +1193,42 @@ function renderWaypoints(waypoints: Waypoint[] | undefined, alternates: RouteVar
     `;
   }
 
+  // Render off-trail waypoint rows
+  const offTrail = offTrailWaypoints || [];
+  function renderOffTrailRow(wp: OffTrailWaypoint, index: number): string {
+    const descIndicator = wp.description
+      ? ' <span class="has-description-indicator" title="Has additional info"></span>'
+      : '';
+    const distLabel = wp.distanceFromTrail >= 1000
+      ? `${(wp.distanceFromTrail / 1000).toFixed(1)} km`
+      : `${wp.distanceFromTrail}m`;
+    return `
+      <tr class="off-trail-row"
+          id="off-trail-row-${index}"
+          data-off-trail-index="${index}"
+          tabindex="0"
+          role="button"
+          aria-expanded="false">
+        <td><span class="expand-chevron">&#9654;</span> ${escapeHtml(wp.name || 'Unnamed')}${descIndicator}</td>
+        <td><span class="waypoint-type ${getTypeClass(wp.type)}">${escapeHtml(wp.type || 'waypoint')}</span></td>
+        <td class="numeric">-</td>
+        <td class="numeric off-trail-distance">${distLabel} off-trail</td>
+        <td class="numeric">-</td>
+        <td class="numeric">-</td>
+        <td class="numeric">-</td>
+        <td class="numeric">-</td>
+        <td class="numeric">-</td>
+      </tr>
+    `;
+  }
+
+  const offTrailSection = offTrail.length > 0 ? `
+    <tr class="off-trail-header-row">
+      <td colspan="9"><strong>Off-trail waypoints</strong> <span class="off-trail-count">(${offTrail.length})</span></td>
+    </tr>
+    ${offTrail.map((wp, i) => renderOffTrailRow(wp, i)).join('')}
+  ` : '';
+
   const tableHtml = `
     <table class="waypoints-table">
       <thead>
@@ -1094,6 +1254,7 @@ function renderWaypoints(waypoints: Waypoint[] | undefined, alternates: RouteVar
             return renderVariantRow(row.data as RouteVariant, false);
           }
         }).join('')}
+        ${offTrailSection}
       </tbody>
     </table>
   `;
@@ -1167,6 +1328,22 @@ function exportDatasheet(trail: Trail): void {
     }
   }
 
+  const offTrail = trail.offTrailWaypoints;
+  if (offTrail && offTrail.length > 0) {
+    lines.push('');
+    lines.push('# Off-Trail Waypoints');
+    lines.push('Name,Type,Distance From Trail (m),Notes');
+    for (const wp of offTrail) {
+      const row = [
+        `"${(wp.name || 'Unnamed').replace(/"/g, '""')}"`,
+        wp.type || 'waypoint',
+        wp.distanceFromTrail,
+        `"${(wp.description || '').replace(/"/g, '""')}"`
+      ];
+      lines.push(row.join(','));
+    }
+  }
+
   const csvContent = lines.join('\n');
   const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
   const url = URL.createObjectURL(blob);
@@ -1204,6 +1381,14 @@ function exportGpx(trail: Trail): void {
   for (const wp of waypoints || []) {
     gpxLines.push(`  <wpt lat="${wp.lat}" lon="${wp.lon}">`);
     if (wp.elevation != null) gpxLines.push(`    <ele>${wp.elevation}</ele>`);
+    gpxLines.push(`    <name>${escapeXml(wp.name || 'Waypoint')}</name>`);
+    if (wp.type) gpxLines.push(`    <type>${escapeXml(wp.type)}</type>`);
+    if (wp.description) gpxLines.push(`    <desc>${escapeXml(wp.description)}</desc>`);
+    gpxLines.push(`  </wpt>`);
+  }
+
+  for (const wp of trail.offTrailWaypoints || []) {
+    gpxLines.push(`  <wpt lat="${wp.lat}" lon="${wp.lon}">`);
     gpxLines.push(`    <name>${escapeXml(wp.name || 'Waypoint')}</name>`);
     if (wp.type) gpxLines.push(`    <type>${escapeXml(wp.type)}</type>`);
     if (wp.description) gpxLines.push(`    <desc>${escapeXml(wp.description)}</desc>`);
@@ -1337,13 +1522,14 @@ function refreshDisplay(trail: Trail): void {
   expandedWaypointIndex = null;
   expandedVariantKey = null;
   expandedVariantWaypointIndex = null;
+  expandedOffTrailIndex = null;
   trackPoints = trail.track.points;
   displayPoints = trail.track.displayPoints || trail.track.points;
   maxDistance = trail.track.totalDistance;
 
   updateStats(trail);
   drawElevationProfile(trail.track.points);
-  renderWaypoints(trail.waypoints, trail.alternates, trail.sideTrips);
+  renderWaypoints(trail.waypoints, trail.alternates, trail.sideTrips, trail.offTrailWaypoints);
 
   // Update waypoint markers
   waypointMarkers.forEach(({ marker }) => {
@@ -1352,6 +1538,7 @@ function refreshDisplay(trail: Trail): void {
     }
   });
   drawWaypointMarkers(trail.waypoints || []);
+  drawOffTrailWaypointMarkers(trail.offTrailWaypoints || []);
 
   // Update main route polyline
   if (map && mainRoutePolyline) {
@@ -1438,13 +1625,13 @@ export async function initTrailViewer(trailId: string): Promise<void> {
     initMap(reversedTrail);
     drawElevationProfile(reversedTrail.track.points);
     setupElevationHover();
-    renderWaypoints(reversedTrail.waypoints, reversedTrail.alternates, reversedTrail.sideTrips);
+    renderWaypoints(reversedTrail.waypoints, reversedTrail.alternates, reversedTrail.sideTrips, reversedTrail.offTrailWaypoints);
   } else {
     updateStats(trail);
     initMap(trail);
     drawElevationProfile(trail.track.points);
     setupElevationHover();
-    renderWaypoints(trail.waypoints, trail.alternates, trail.sideTrips);
+    renderWaypoints(trail.waypoints, trail.alternates, trail.sideTrips, trail.offTrailWaypoints);
   }
 
   // Set initial direction label from config
@@ -1457,6 +1644,13 @@ export async function initTrailViewer(trailId: string): Promise<void> {
     if (target.classList.contains('waypoint-show-on-map')) {
       e.preventDefault();
       handleTableRowClick(parseInt(target.dataset.waypointIndex!, 10));
+      return;
+    }
+
+    // Handle off-trail waypoint "Show on map" link clicks
+    if (target.classList.contains('off-trail-show-on-map')) {
+      e.preventDefault();
+      handleOffTrailShowOnMap(parseInt(target.dataset.offTrailIndex!, 10));
       return;
     }
 
@@ -1488,6 +1682,13 @@ export async function initTrailViewer(trailId: string): Promise<void> {
       return;
     }
 
+    // Handle off-trail waypoint row clicks for expand/collapse
+    const offTrailRow = target.closest('tr[data-off-trail-index]') as HTMLElement;
+    if (offTrailRow) {
+      toggleOffTrailExpansion(parseInt(offTrailRow.dataset.offTrailIndex!, 10));
+      return;
+    }
+
     // Handle waypoint row clicks for expand/collapse
     const row = target.closest('tr[data-waypoint-index]');
     if (row) {
@@ -1514,6 +1715,14 @@ export async function initTrailViewer(trailId: string): Promise<void> {
       if (variantRow) {
         e.preventDefault();
         toggleVariantExpansion(variantRow.dataset.variantKey!);
+        return;
+      }
+
+      // Off-trail waypoint rows
+      const offTrailRow = target.closest('tr[data-off-trail-index]') as HTMLElement;
+      if (offTrailRow) {
+        e.preventDefault();
+        toggleOffTrailExpansion(parseInt(offTrailRow.dataset.offTrailIndex!, 10));
         return;
       }
 
