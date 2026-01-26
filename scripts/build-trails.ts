@@ -3,10 +3,63 @@ import * as path from 'path';
 import Papa from 'papaparse';
 import { JSDOM } from 'jsdom';
 import { haversineDistance as haversineDistanceMeters } from '../src/lib/distance.js';
+import { douglasPeucker } from '../src/lib/gpx-optimizer.js';
+import { classifyTracks, combineTracksGeographically } from '../src/lib/track-classification.js';
+import { classifyWaypoint } from '../src/lib/waypoint-classifier.js';
+import type { TrackClassificationConfig, GpxPoint as LibGpxPoint } from '../src/lib/types.js';
 
 /** Calculate haversine distance in km */
 function haversineDistanceKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
   return haversineDistanceMeters(lat1, lon1, lat2, lon2) / 1000;
+}
+
+// Simplification tolerance constants (in meters)
+// These were empirically tuned to balance visual fidelity vs rendering performance:
+// - MIN_TOLERANCE_METERS: Minimum perpendicular distance for point removal.
+//   Below 5m, removed points are imperceptible at typical map zoom levels.
+// - DISTANCE_SCALE_FACTOR_KM: Longer trails can tolerate larger tolerances since
+//   users zoom out more. 500km normalizes so a 500km trail gets ~2x base tolerance.
+// - TOLERANCE_MULTIPLIER: Scales the logarithmic reduction factor. Higher values
+//   remove more points but may lose detail on sharp switchbacks.
+const MIN_TOLERANCE_METERS = 5;
+const DISTANCE_SCALE_FACTOR_KM = 500;
+const TOLERANCE_MULTIPLIER = 5;
+
+/**
+ * Calculate an adaptive simplification tolerance based on point count.
+ * Returns tolerance in meters that should result in approximately `targetPoints` points.
+ *
+ * Uses a heuristic based on trail length and point density:
+ * - More points relative to distance = higher tolerance needed
+ * - Starts with a baseline and scales logarithmically
+ */
+function calculateAdaptiveTolerance(
+  points: { lat: number; lon: number }[],
+  targetPoints: number,
+  totalDistanceKm: number
+): number {
+  if (points.length <= targetPoints) return 0;
+
+  // Ratio of how much we need to reduce
+  const reductionRatio = points.length / targetPoints;
+
+  // Base tolerance scales with trail length (longer trails can have larger tolerance)
+  // and reduction ratio (more points to remove = higher tolerance)
+  const scaleFactor = Math.log2(reductionRatio) * (1 + totalDistanceKm / DISTANCE_SCALE_FACTOR_KM);
+
+  return MIN_TOLERANCE_METERS + scaleFactor * TOLERANCE_MULTIPLIER;
+}
+
+interface ClimateLocationConfig {
+  name: string;
+  waypointName?: string;
+  lat: number;
+  lon: number;
+}
+
+interface DirectionConfig {
+  default: string;
+  reversed: string;
 }
 
 interface TrailConfig {
@@ -15,12 +68,15 @@ interface TrailConfig {
   shortName: string;
   region: string;
   lengthKm: number;
-  difficulty: string;
-  bestMonths: number[];
   gpxFile: string;
+  geojsonFile?: string;  // CalTopo GeoJSON file for alternates/side trips
+  trackClassification?: TrackClassificationConfig;  // Patterns for multi-track GPX classification
+  waypointMaxDistance?: number;  // Max distance (meters) from track to match waypoints (default 500)
   waypointsFile?: string;  // Now optional - can extract from GPX
   climateFile?: string;
+  climateLocations?: ClimateLocationConfig[];
   description?: string;
+  direction?: DirectionConfig;
 }
 
 interface GpxPoint {
@@ -55,6 +111,22 @@ interface WaypointVisit {
   distanceFromTrack: number;
 }
 
+interface VariantWaypoint {
+  name: string;
+  type: string;
+  lat: number;
+  lon: number;
+  elevation: number;
+  distance: number;        // segment distance from previous waypoint
+  totalDistance: number;   // cumulative distance along variant
+  ascent: number;
+  descent: number;
+  totalAscent: number;
+  totalDescent: number;
+  variantTrackIndex: number;
+  description?: string;
+}
+
 interface RouteVariant {
   name: string;
   type: 'alternate' | 'side-trip';
@@ -66,20 +138,29 @@ interface RouteVariant {
   startTrackIndex?: number;   // index in track points array
   endDistance?: number;       // km where alternate rejoins (alternates only)
   endTrackIndex?: number;     // track index where it rejoins
+  waypoints?: VariantWaypoint[];
+}
+
+interface OffTrailWaypoint extends Waypoint {
+  distanceFromTrail: number;  // meters
 }
 
 interface ProcessedTrail {
   config: TrailConfig;
   track: {
     points: { lat: number; lon: number; ele: number; dist: number }[];
+    displayPoints: { lat: number; lon: number; ele: number; dist: number }[];
     totalDistance: number;
     totalAscent: number;
     totalDescent: number;
   };
   waypoints: EnrichedWaypoint[];
+  offTrailWaypoints: OffTrailWaypoint[];
   alternates: RouteVariant[];
   sideTrips: RouteVariant[];
   climate: Record<string, unknown> | null;
+  climateLocations: ClimateLocationConfig[] | null;
+  direction: DirectionConfig | null;
 }
 
 interface CaltopoData {
@@ -89,58 +170,6 @@ interface CaltopoData {
   sideTrips: RouteVariant[];
 }
 
-/** Waypoint type inference from name prefixes (CalTopo convention) */
-const WAYPOINT_PREFIX_MAP: Record<string, string> = {
-  'C ': 'campsite',
-  'W ': 'water',
-  'H ': 'hut',
-  'WT:': 'water-tank',
-  'WT ': 'water-tank',
-  'ST:': 'side-trip',
-  'ST ': 'side-trip',
-  'M ': 'mountain',
-};
-
-/** Known town/resupply names (add more as needed) */
-const KNOWN_TOWNS = new Set([
-  'mt hotham', 'adaminaby', 'falls creek', 'omeo', 'thredbo',
-  'glengarry', 'rawson', 'walhalla', 'jindabyne', 'khancoban',
-]);
-
-function inferWaypointType(name: string): string {
-  const nameLower = name.toLowerCase();
-
-  // Check for known towns
-  if (KNOWN_TOWNS.has(nameLower)) {
-    return 'town';
-  }
-
-  // Check for prefix patterns
-  for (const [prefix, type] of Object.entries(WAYPOINT_PREFIX_MAP)) {
-    if (name.startsWith(prefix)) {
-      return type;
-    }
-  }
-
-  // Infer from name content
-  if (nameLower.includes('hut') || nameLower.includes('shelter')) return 'hut';
-  if (nameLower.includes('camp')) return 'campsite';
-  if (nameLower.includes('water') || nameLower.includes('creek') || nameLower.includes('river') || nameLower.includes('spring')) return 'water';
-  if (nameLower.includes('tank')) return 'water-tank';
-  if (nameLower.includes('mt ') || nameLower.includes('mount') || nameLower.includes('peak')) return 'mountain';
-
-  return 'waypoint';
-}
-
-function cleanWaypointName(name: string): string {
-  // Remove type prefixes from display name
-  for (const prefix of Object.keys(WAYPOINT_PREFIX_MAP)) {
-    if (name.startsWith(prefix)) {
-      return name.slice(prefix.length).trim();
-    }
-  }
-  return name;
-}
 
 // Handle both Windows and Unix paths from import.meta.url
 const SCRIPTS_DIR = path.dirname(
@@ -153,25 +182,35 @@ const DATA_DIR = path.join(PROJECT_ROOT, 'data/trails');
 const OUTPUT_DIR = path.join(PROJECT_ROOT, 'public/data/generated');
 const TRAIL_PAGES_DIR = path.join(PROJECT_ROOT, 'src/web/trails');
 const TRAIL_TEMPLATE_PATH = path.join(TRAIL_PAGES_DIR, 'trail-template.html');
+const CLIMATE_TEMPLATE_PATH = path.join(TRAIL_PAGES_DIR, 'climate-template.html');
 
-const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+interface ParsedGpxTrack {
+  name: string;
+  points: GpxPoint[];
+}
+
+interface ParsedGpxResult {
+  tracks: ParsedGpxTrack[];
+  waypoints: Waypoint[];
+  name: string | null;
+}
 
 /**
  * Parse GPX XML content using jsdom (for Node.js environment)
- * Extracts both track points and waypoints
+ * Extracts all tracks and waypoints for later classification
  */
-function parseGpxNode(xml: string): { points: GpxPoint[]; waypoints: Waypoint[]; name: string | null; trackInfo: { name: string; pointCount: number }[] } {
+function parseGpxNode(xml: string): ParsedGpxResult {
   const dom = new JSDOM(xml, { contentType: 'text/xml' });
   const doc = dom.window.document;
 
   // Extract GPX name from metadata
   const gpxName = doc.querySelector('metadata name')?.textContent || null;
 
-  // Get all tracks and their info
-  const tracks = doc.querySelectorAll('trk');
-  const trackInfo: { name: string; pointCount: number; points: GpxPoint[] }[] = [];
+  // Get all tracks with their points
+  const trkElements = doc.querySelectorAll('trk');
+  const tracks: ParsedGpxTrack[] = [];
 
-  for (const track of Array.from(tracks) as Element[]) {
+  for (const track of Array.from(trkElements) as Element[]) {
     const trackName = track.querySelector('name')?.textContent || 'Unnamed';
     const trackPoints = track.querySelectorAll('trkseg trkpt');
     const points = (Array.from(trackPoints) as Element[]).map(pt => ({
@@ -180,62 +219,106 @@ function parseGpxNode(xml: string): { points: GpxPoint[]; waypoints: Waypoint[];
       ele: parseFloat(pt.querySelector('ele')?.textContent || '0'),
       time: pt.querySelector('time')?.textContent || null,
     }));
-    trackInfo.push({ name: trackName, pointCount: points.length, points });
+    tracks.push({ name: trackName, points });
   }
 
-  // Find the main track - look for "main" in name, or use the longest track
-  let mainTrackIndex = trackInfo.findIndex(t =>
-    t.name.toLowerCase().includes('main') &&
-    !t.name.toLowerCase().includes('side') &&
-    !t.name.toLowerCase().includes('alt')
-  );
-
-  // If no "main" track found, use the track with the most points
-  if (mainTrackIndex === -1 && trackInfo.length > 0) {
-    mainTrackIndex = trackInfo.reduce((maxIdx, track, idx, arr) =>
-      track.pointCount > arr[maxIdx].pointCount ? idx : maxIdx, 0);
-  }
-
-  let points: GpxPoint[] = [];
-  if (mainTrackIndex >= 0) {
-    points = trackInfo[mainTrackIndex].points;
-    console.log(`  Using track "${trackInfo[mainTrackIndex].name}" (${points.length} points)`);
-    if (trackInfo.length > 1) {
-      console.log(`  (${trackInfo.length - 1} other tracks: alternates/side trips)`);
-    }
-  }
-
-  // If no track points, try route points
-  if (points.length === 0) {
+  // If no tracks found, try route points as a single "track"
+  if (tracks.length === 0) {
     const routePoints = doc.querySelectorAll('rte rtept');
-    points = (Array.from(routePoints) as Element[]).map(pt => ({
-      lat: parseFloat(pt.getAttribute('lat') || '0'),
-      lon: parseFloat(pt.getAttribute('lon') || '0'),
-      ele: parseFloat(pt.querySelector('ele')?.textContent || '0'),
-      time: pt.querySelector('time')?.textContent || null,
-    }));
+    if (routePoints.length > 0) {
+      const points = (Array.from(routePoints) as Element[]).map(pt => ({
+        lat: parseFloat(pt.getAttribute('lat') || '0'),
+        lon: parseFloat(pt.getAttribute('lon') || '0'),
+        ele: parseFloat(pt.querySelector('ele')?.textContent || '0'),
+        time: pt.querySelector('time')?.textContent || null,
+      }));
+      tracks.push({ name: 'Route', points });
+    }
   }
 
   // Extract waypoints from <wpt> elements
   const wptElements = doc.querySelectorAll('wpt');
   const waypoints: Waypoint[] = (Array.from(wptElements) as Element[]).map(wpt => {
-    const name = wpt.querySelector('name')?.textContent || 'Unnamed';
-    const inferredType = inferWaypointType(name);
+    const rawName = wpt.querySelector('name')?.textContent || 'Unnamed';
+    const classification = classifyWaypoint(rawName);
     return {
-      name: cleanWaypointName(name),
+      name: classification.cleanedName,
       lat: parseFloat(wpt.getAttribute('lat') || '0'),
       lon: parseFloat(wpt.getAttribute('lon') || '0'),
-      type: inferredType,
+      type: classification.type,
       description: wpt.querySelector('desc')?.textContent || undefined,
     };
   });
 
   return {
-    points,
+    tracks,
     waypoints,
     name: gpxName,
-    trackInfo: trackInfo.map(t => ({ name: t.name, pointCount: t.pointCount }))
   };
+}
+
+/**
+ * Select and combine main route tracks using classification.
+ * Falls back to longest track if no classification config provided.
+ */
+function selectMainRoute(
+  gpxData: ParsedGpxResult,
+  config: TrailConfig
+): { points: GpxPoint[]; classificationSummary: string; alternateTracks: ParsedGpxTrack[]; sideTripTracks: ParsedGpxTrack[] } {
+  const classification = classifyTracks(
+    gpxData.tracks.map(t => ({
+      name: t.name,
+      points: t.points.map(p => ({ ...p, time: p.time })) as LibGpxPoint[],
+    })),
+    config.trackClassification || {}
+  );
+
+  // Log classification results
+  const parts: string[] = [];
+  if (classification.mainTracks.length > 0) parts.push(`${classification.mainTracks.length} main`);
+  if (classification.alternateTracks.length > 0) parts.push(`${classification.alternateTracks.length} alternates`);
+  if (classification.sideTripTracks.length > 0) parts.push(`${classification.sideTripTracks.length} side trips`);
+  if (classification.ignoredTracks.length > 0) parts.push(`${classification.ignoredTracks.length} ignored`);
+  if (classification.unclassifiedTracks.length > 0) parts.push(`${classification.unclassifiedTracks.length} unclassified`);
+  const classificationSummary = parts.length > 0 ? parts.join(', ') : 'no tracks';
+
+  const alternateTracks: ParsedGpxTrack[] = classification.alternateTracks.map(t => ({
+    name: t.name,
+    points: t.points.map(p => ({ lat: p.lat, lon: p.lon, ele: p.ele, time: p.time })),
+  }));
+  const sideTripTracks: ParsedGpxTrack[] = classification.sideTripTracks.map(t => ({
+    name: t.name,
+    points: t.points.map(p => ({ lat: p.lat, lon: p.lon, ele: p.ele, time: p.time })),
+  }));
+
+  // No main tracks found
+  if (classification.mainTracks.length === 0) {
+    return { points: [], classificationSummary, alternateTracks, sideTripTracks };
+  }
+
+  // Single main track - return directly
+  if (classification.mainTracks.length === 1) {
+    return {
+      points: classification.mainTracks[0].points,
+      classificationSummary,
+      alternateTracks,
+      sideTripTracks,
+    };
+  }
+
+  // Multiple main tracks - combine geographically
+  const { combinedPoints, orderedNames, warnings } = combineTracksGeographically(
+    classification.mainTracks.map(t => ({ name: t.name, points: t.points }))
+  );
+
+  // Log warnings about gaps
+  for (const warning of warnings) {
+    console.log(`  Warning: ${warning.gapMeters.toFixed(0)}m gap between "${warning.fromTrack}" and "${warning.toTrack}"`);
+  }
+
+  console.log(`  Combined ${orderedNames.length} tracks: ${orderedNames.slice(0, 3).join(', ')}${orderedNames.length > 3 ? '...' : ''}`);
+
+  return { points: combinedPoints, classificationSummary, alternateTracks, sideTripTracks };
 }
 
 /**
@@ -429,13 +512,14 @@ function calculateSegmentStats(
  */
 function enrichWaypoints(
   waypoints: Waypoint[],
-  trackPoints: { lat: number; lon: number; ele: number }[]
+  trackPoints: { lat: number; lon: number; ele: number }[],
+  maxDistanceMeters: number = 500
 ): EnrichedWaypoint[] {
   if (trackPoints.length === 0 || waypoints.length === 0) {
     return [];
   }
 
-  const visits = findWaypointVisits(waypoints, trackPoints);
+  const visits = findWaypointVisits(waypoints, trackPoints, maxDistanceMeters);
 
   if (visits.length === 0) {
     return [];
@@ -475,6 +559,61 @@ function enrichWaypoints(
 }
 
 /**
+ * Enrich route variants with waypoint data.
+ * For each variant, walks along its track points and matches nearby waypoints
+ * using the same hysteresis approach as the main route.
+ */
+function enrichVariantWaypoints(
+  variants: RouteVariant[],
+  waypoints: Waypoint[]
+): RouteVariant[] {
+  if (waypoints.length === 0) return variants;
+
+  return variants.map(variant => {
+    if (variant.points.length === 0) return variant;
+
+    const visits = findWaypointVisits(waypoints, variant.points);
+    if (visits.length === 0) return variant;
+
+    const variantWaypoints: VariantWaypoint[] = [];
+    let prevTrackIndex = 0;
+    let runningDistance = 0;
+    let runningAscent = 0;
+    let runningDescent = 0;
+
+    for (const visit of visits) {
+      const segmentStats = calculateSegmentStats(variant.points, prevTrackIndex, visit.trackIndex);
+
+      runningDistance += segmentStats.distance;
+      runningAscent += segmentStats.ascent;
+      runningDescent += segmentStats.descent;
+
+      const trackPoint = variant.points[visit.trackIndex];
+
+      variantWaypoints.push({
+        name: visit.waypoint.name,
+        type: visit.waypoint.type,
+        lat: visit.waypoint.lat,
+        lon: visit.waypoint.lon,
+        elevation: Math.round(trackPoint.ele),
+        distance: Math.round(segmentStats.distance * 100) / 100,
+        totalDistance: Math.round(runningDistance * 100) / 100,
+        ascent: Math.round(segmentStats.ascent),
+        descent: Math.round(segmentStats.descent),
+        totalAscent: Math.round(runningAscent),
+        totalDescent: Math.round(runningDescent),
+        variantTrackIndex: visit.trackIndex,
+        description: visit.waypoint.description,
+      });
+
+      prevTrackIndex = visit.trackIndex;
+    }
+
+    return { ...variant, waypoints: variantWaypoints };
+  });
+}
+
+/**
  * Parse CalTopo GeoJSON for waypoint categorization, descriptions, and route variants
  */
 function parseCaltopoGeojson(jsonPath: string): CaltopoData {
@@ -500,25 +639,19 @@ function parseCaltopoGeojson(jsonPath: string): CaltopoData {
     // Process markers (waypoints)
     for (const feature of geojson.features || []) {
       if (feature.properties?.class === 'Marker') {
-        const waypointName = feature.properties.title || '';
+        const rawName = feature.properties.title || '';
         const folderId = feature.properties.folderId;
         const folderName = folderId ? folderNames.get(folderId) || '' : '';
 
-        // Categorize by folder
-        let category = 'waypoint';
-        if (folderName.includes('hut')) category = 'hut';
-        else if (folderName.includes('campsite')) category = 'campsite';
-        else if (folderName.includes('water tank')) category = 'water-tank';
-        else if (folderName.includes('water source')) category = 'water';
-        else if (folderName.includes('mountain')) category = 'mountain';
-        else if (folderName.includes('side trip')) category = 'side-trip';
-        else if (folderName.includes('town')) category = 'town';
+        // Use classifyWaypoint with folder info to get type and cleaned name
+        const classification = classifyWaypoint(rawName, { folderName });
 
-        result.waypointCategories.set(waypointName, category);
+        // Key by cleaned name for easier matching with GPX waypoints
+        result.waypointCategories.set(classification.cleanedName, classification.type);
 
-        // Extract description if available
+        // Extract description if available (also keyed by cleaned name)
         if (feature.properties.description) {
-          result.waypointDescriptions.set(waypointName, feature.properties.description);
+          result.waypointDescriptions.set(classification.cleanedName, feature.properties.description);
         }
       }
     }
@@ -586,25 +719,54 @@ function findGpxFile(trailDir: string): string | null {
 }
 
 /**
- * Find a CalTopo GeoJSON file in a directory
+ * Find a CalTopo GeoJSON file in a directory.
+ * If explicitFile is provided, use that. Otherwise, auto-detect by finding
+ * JSON files with a features array (excluding trail.json and climate.json).
  */
-function findGeojsonFile(trailDir: string): string | null {
+function findGeojsonFile(trailDir: string, explicitFile?: string): string | null {
+  // If explicitly specified, use that
+  if (explicitFile) {
+    const filePath = path.join(trailDir, explicitFile);
+    if (fs.existsSync(filePath)) {
+      return explicitFile;
+    }
+    console.log(`  Warning: Specified geojsonFile not found: ${explicitFile}`);
+  }
+
+  // Auto-detect: find JSON files that look like GeoJSON (have features array)
   const files = fs.readdirSync(trailDir);
-  const jsonFile = files.find(f => f.toLowerCase().endsWith('.json') && f !== 'trail.json');
-  return jsonFile || null;
+  const jsonFiles = files.filter(f =>
+    f.toLowerCase().endsWith('.json') &&
+    f !== 'trail.json' &&
+    f !== 'climate.json'
+  );
+
+  for (const file of jsonFiles) {
+    try {
+      const content = fs.readFileSync(path.join(trailDir, file), 'utf-8');
+      const parsed = JSON.parse(content);
+      if (Array.isArray(parsed.features)) {
+        return file;  // This is a GeoJSON file
+      }
+    } catch {
+      // Not valid JSON or can't read, skip
+    }
+  }
+
+  return null;
 }
 
 /**
  * Generate trail.json config from GPX file analysis
  */
-function generateTrailConfig(trailDir: string, gpxFile: string, gpxData: { points: GpxPoint[]; waypoints: Waypoint[]; name: string | null }): TrailConfig {
+function generateTrailConfig(trailDir: string, gpxFile: string, gpxData: ParsedGpxResult, mainRoutePoints: GpxPoint[]): TrailConfig {
   const trailId = path.basename(trailDir).toLowerCase();
 
-  // Calculate total distance
+  // Calculate total distance from main route points
   let totalDistance = 0;
-  for (let i = 1; i < gpxData.points.length; i++) {
-    const prev = gpxData.points[i - 1];
-    const curr = gpxData.points[i];
+  for (let i = 1; i < mainRoutePoints.length; i++) {
+    const prev = mainRoutePoints[i - 1];
+    const curr = mainRoutePoints[i];
     totalDistance += haversineDistanceKm(prev.lat, prev.lon, curr.lat, curr.lon);
   }
 
@@ -619,8 +781,6 @@ function generateTrailConfig(trailDir: string, gpxFile: string, gpxData: { point
     shortName: dirName.toUpperCase(),
     region: 'Unknown',  // User should fill this in
     lengthKm: Math.round(totalDistance * 10) / 10,
-    difficulty: 'unknown',  // User should fill this in
-    bestMonths: [],  // User should fill this in
     gpxFile,
     description: `Trail data auto-generated from ${gpxFile}. Edit trail.json to customize.`,
   };
@@ -715,13 +875,18 @@ async function processTrail(trailDir: string, autoGenConfig: boolean = false): P
   const gpxContent = fs.readFileSync(gpxPath, 'utf-8');
   const gpxData = parseGpxNode(gpxContent);
 
-  // Generate or load config
+  // Load config first (needed for track classification patterns)
   let config: TrailConfig;
   if (autoGenConfig) {
-    config = generateTrailConfig(trailDir, gpxFile, gpxData);
-    // Write generated config for user to customize later
-    fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
-    console.log(`  ✓ Generated trail.json`);
+    // For auto-gen, create a minimal config first, then update after classification
+    config = {
+      id: path.basename(trailDir).toLowerCase(),
+      name: gpxData.name || path.basename(trailDir),
+      shortName: path.basename(trailDir).toUpperCase(),
+      region: 'Unknown',
+      lengthKm: 0,
+      gpxFile,
+    };
   } else {
     config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
     // Fill in gpxFile if missing
@@ -730,12 +895,24 @@ async function processTrail(trailDir: string, autoGenConfig: boolean = false): P
     }
   }
 
+  // Select and combine main route tracks using classification
+  const { points: mainRoutePoints, classificationSummary, alternateTracks, sideTripTracks: classifiedSideTrips } = selectMainRoute(gpxData, config);
+  console.log(`  Classified: ${classificationSummary}`);
+
+  // For auto-gen config, now generate the full config with distance calculated
+  if (autoGenConfig) {
+    config = generateTrailConfig(trailDir, gpxFile, gpxData, mainRoutePoints);
+    // Write generated config for user to customize later
+    fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+    console.log(`  ✓ Generated trail.json`);
+  }
+
   // Calculate cumulative distance and elevation
   let totalDistance = 0;
   let totalAscent = 0;
   let totalDescent = 0;
 
-  const points = gpxData.points.map((p, i, arr) => {
+  const points = mainRoutePoints.map((p, i, arr) => {
     if (i > 0) {
       const prev = arr[i - 1];
       const dist = haversineDistanceKm(prev.lat, prev.lon, p.lat, p.lon);
@@ -753,13 +930,34 @@ async function processTrail(trailDir: string, autoGenConfig: boolean = false): P
     };
   });
 
+  // Simplify for map display (target ~3000 points for smooth rendering)
+  const targetDisplayPoints = 3000;
+  let displayPoints = points;
+
+  if (points.length > targetDisplayPoints) {
+    const tolerance = calculateAdaptiveTolerance(points, targetDisplayPoints, totalDistance);
+    // douglasPeucker expects GpxPoint format with lat, lon, ele
+    const simplified = douglasPeucker(
+      points.map(p => ({ lat: p.lat, lon: p.lon, ele: p.ele, time: null })),
+      tolerance
+    );
+    // Build a Map for O(1) lookup of original points by lat/lon
+    // Douglas-Peucker returns references to original points, so exact equality works
+    const pointMap = new Map(points.map(p => [`${p.lat},${p.lon}`, p]));
+    displayPoints = simplified.map(sp => {
+      const original = pointMap.get(`${sp.lat},${sp.lon}`);
+      return original || { lat: sp.lat, lon: sp.lon, ele: sp.ele, dist: 0 };
+    });
+    console.log(`  ✓ Simplified ${points.length} → ${displayPoints.length} points for display`);
+  }
+
   // Get waypoints - prefer GPX waypoints, fall back to CSV if specified
   let waypoints: Waypoint[] = gpxData.waypoints;
   let alternates: RouteVariant[] = [];
   let sideTrips: RouteVariant[] = [];
 
   // If GeoJSON exists, use it to enhance data
-  const geojsonFile = findGeojsonFile(trailDir);
+  const geojsonFile = findGeojsonFile(trailDir, config.geojsonFile);
   if (geojsonFile) {
     const geojsonPath = path.join(trailDir, geojsonFile);
     const caltopoData = parseCaltopoGeojson(geojsonPath);
@@ -767,20 +965,8 @@ async function processTrail(trailDir: string, autoGenConfig: boolean = false): P
     if (caltopoData.waypointCategories.size > 0) {
       console.log(`  ✓ Using ${geojsonFile} for waypoint categorization`);
       // Update waypoint types and descriptions from GeoJSON
+      // Both GPX waypoints and GeoJSON categories are now keyed by cleaned name
       waypoints = waypoints.map(wp => {
-        // Look up by original name (with prefix)
-        for (const [prefix] of Object.entries(WAYPOINT_PREFIX_MAP)) {
-          const originalName = prefix + wp.name;
-          if (caltopoData.waypointCategories.has(originalName)) {
-            const desc = caltopoData.waypointDescriptions.get(originalName);
-            return {
-              ...wp,
-              type: caltopoData.waypointCategories.get(originalName)!,
-              description: desc || wp.description,
-            };
-          }
-        }
-        // Try direct match
         if (caltopoData.waypointCategories.has(wp.name)) {
           const desc = caltopoData.waypointDescriptions.get(wp.name);
           return {
@@ -796,12 +982,58 @@ async function processTrail(trailDir: string, autoGenConfig: boolean = false): P
     // Add alternates and side trips from GeoJSON
     if (caltopoData.alternates.length > 0) {
       alternates = caltopoData.alternates;
-      console.log(`  ✓ Found ${alternates.length} alternate routes`);
+      console.log(`  ✓ Found ${alternates.length} alternate routes from GeoJSON`);
     }
     if (caltopoData.sideTrips.length > 0) {
       sideTrips = caltopoData.sideTrips;
-      console.log(`  ✓ Found ${sideTrips.length} side trips`);
+      console.log(`  ✓ Found ${sideTrips.length} side trips from GeoJSON`);
     }
+  }
+
+  // Convert classified GPX alternate tracks to RouteVariant[], merging with GeoJSON variants
+  // GeoJSON takes precedence if names overlap
+  const geojsonAlternateNames = new Set(alternates.map(a => a.name.toLowerCase()));
+  for (const track of alternateTracks) {
+    if (!geojsonAlternateNames.has(track.name.toLowerCase())) {
+      const trackPoints3d = track.points.map(p => ({ lat: p.lat, lon: p.lon, ele: p.ele }));
+      const stats = calculateRouteStats(trackPoints3d);
+      alternates.push({
+        name: track.name,
+        type: 'alternate',
+        points: trackPoints3d,
+        distance: Math.round(stats.distance * 10) / 10,
+        elevation: {
+          ascent: Math.round(stats.ascent),
+          descent: Math.round(stats.descent),
+        },
+      });
+    }
+  }
+
+  // Convert classified GPX side-trip tracks to RouteVariant[]
+  const geojsonSideTripNames = new Set(sideTrips.map(s => s.name.toLowerCase()));
+  for (const track of classifiedSideTrips) {
+    if (!geojsonSideTripNames.has(track.name.toLowerCase())) {
+      const trackPoints3d = track.points.map(p => ({ lat: p.lat, lon: p.lon, ele: p.ele }));
+      const stats = calculateRouteStats(trackPoints3d);
+      sideTrips.push({
+        name: track.name,
+        type: 'side-trip',
+        points: trackPoints3d,
+        distance: Math.round(stats.distance * 10) / 10,
+        elevation: {
+          ascent: Math.round(stats.ascent),
+          descent: Math.round(stats.descent),
+        },
+      });
+    }
+  }
+
+  if (alternateTracks.length > 0 || classifiedSideTrips.length > 0) {
+    const gpxAlts = alternates.length - (geojsonAlternateNames.size);
+    const gpxSides = sideTrips.length - (geojsonSideTripNames.size);
+    if (gpxAlts > 0) console.log(`  ✓ Added ${gpxAlts} alternate routes from GPX tracks`);
+    if (gpxSides > 0) console.log(`  ✓ Added ${gpxSides} side trips from GPX tracks`);
   }
 
   // Fall back to CSV waypoints if no GPX waypoints and CSV exists
@@ -822,37 +1054,58 @@ async function processTrail(trailDir: string, autoGenConfig: boolean = false): P
     }
   }
 
-  // Parse climate if exists
+  // Parse climate if exists (check config.climateFile or default climate.json)
   let climate: Record<string, unknown> | null = null;
-  if (config.climateFile) {
-    const climatePath = path.join(trailDir, config.climateFile);
-    if (fs.existsSync(climatePath)) {
-      climate = JSON.parse(fs.readFileSync(climatePath, 'utf-8'));
-    }
+  const climateFile = config.climateFile || 'climate.json';
+  const climatePath = path.join(trailDir, climateFile);
+  if (fs.existsSync(climatePath)) {
+    climate = JSON.parse(fs.readFileSync(climatePath, 'utf-8'));
   }
 
   // Update config with calculated distance
   config.lengthKm = Math.round(totalDistance * 10) / 10;
 
   // Enrich waypoints with distance and elevation data
-  const enrichedWaypoints = enrichWaypoints(waypoints, gpxData.points);
+  const waypointMaxDist = config.waypointMaxDistance ?? 500;
+  const enrichedWaypoints = enrichWaypoints(waypoints, mainRoutePoints, waypointMaxDist);
 
   // Enrich variants with junction point data (where they connect to main track)
   const enrichedAlternates = findVariantJunctions(alternates, points);
   const enrichedSideTrips = findVariantJunctions(sideTrips, points);
 
+  // Enrich variants with waypoint data (which waypoints they pass through)
+  const alternatesWithWaypoints = enrichVariantWaypoints(enrichedAlternates, waypoints);
+  const sideTripsWithWaypoints = enrichVariantWaypoints(enrichedSideTrips, waypoints);
+
+  // Identify off-trail waypoints (not matched even at the increased threshold)
+  const matchedNames = new Set(enrichedWaypoints.map(ew => `${ew.name}|${ew.lat}|${ew.lon}`));
+  const offTrailWaypoints: OffTrailWaypoint[] = waypoints
+    .filter(wp => !matchedNames.has(`${wp.name}|${wp.lat}|${wp.lon}`))
+    .map(wp => {
+      const { distanceFromTrack } = findNearestTrackPoint(wp, points);
+      return { ...wp, distanceFromTrail: Math.round(distanceFromTrack) };
+    });
+
+  if (offTrailWaypoints.length > 0) {
+    console.log(`  ✓ ${offTrailWaypoints.length} off-trail waypoints (beyond ${waypointMaxDist}m threshold)`);
+  }
+
   return {
     config,
     track: {
       points,
+      displayPoints,
       totalDistance,
       totalAscent,
       totalDescent,
     },
     waypoints: enrichedWaypoints,
-    alternates: enrichedAlternates,
-    sideTrips: enrichedSideTrips,
+    offTrailWaypoints,
+    alternates: alternatesWithWaypoints,
+    sideTrips: sideTripsWithWaypoints,
     climate,
+    climateLocations: config.climateLocations || null,
+    direction: config.direction || null,
   };
 }
 
@@ -867,20 +1120,12 @@ function generateTrailPage(trail: ProcessedTrail): void {
 
   const template = fs.readFileSync(TRAIL_TEMPLATE_PATH, 'utf-8');
 
-  // Format best months
-  const bestMonths = (trail.config.bestMonths || [])
-    .map(m => MONTH_NAMES[m - 1] || '')
-    .filter(Boolean)
-    .join(', ') || 'Year-round';
-
   // Replace placeholders
   const html = template
     .replace(/\{\{TRAIL_ID\}\}/g, trail.config.id)
     .replace(/\{\{TRAIL_NAME\}\}/g, trail.config.name)
     .replace(/\{\{TRAIL_SHORT_NAME\}\}/g, trail.config.shortName || trail.config.name)
-    .replace(/\{\{TRAIL_REGION\}\}/g, trail.config.region || 'Unknown')
-    .replace(/\{\{TRAIL_DIFFICULTY\}\}/g, trail.config.difficulty || 'Unknown')
-    .replace(/\{\{TRAIL_BEST_MONTHS\}\}/g, bestMonths);
+    .replace(/\{\{TRAIL_REGION\}\}/g, trail.config.region || 'Unknown');
 
   // Create trail directory and write HTML
   const trailPageDir = path.join(TRAIL_PAGES_DIR, trail.config.id);
@@ -889,6 +1134,34 @@ function generateTrailPage(trail: ProcessedTrail): void {
   }
 
   const htmlPath = path.join(trailPageDir, 'index.html');
+  fs.writeFileSync(htmlPath, html);
+  console.log(`  ✓ Generated ${htmlPath}`);
+}
+
+/**
+ * Generate a climate page for a trail from the template
+ */
+function generateClimatePage(trail: ProcessedTrail): void {
+  if (!fs.existsSync(CLIMATE_TEMPLATE_PATH)) {
+    console.log('  Note: Climate template not found, skipping climate page generation');
+    return;
+  }
+
+  const template = fs.readFileSync(CLIMATE_TEMPLATE_PATH, 'utf-8');
+
+  // Replace placeholders
+  const html = template
+    .replace(/\{\{TRAIL_ID\}\}/g, trail.config.id)
+    .replace(/\{\{TRAIL_NAME\}\}/g, trail.config.name)
+    .replace(/\{\{TRAIL_SHORT_NAME\}\}/g, trail.config.shortName || trail.config.name);
+
+  // Create trail directory if it doesn't exist
+  const trailPageDir = path.join(TRAIL_PAGES_DIR, trail.config.id);
+  if (!fs.existsSync(trailPageDir)) {
+    fs.mkdirSync(trailPageDir, { recursive: true });
+  }
+
+  const htmlPath = path.join(trailPageDir, 'climate.html');
   fs.writeFileSync(htmlPath, html);
   console.log(`  ✓ Generated ${htmlPath}`);
 }
@@ -967,10 +1240,11 @@ async function main() {
       console.log(`  ✓ Written to ${outputPath}`);
       console.log(`    Distance: ${processed.track.totalDistance.toFixed(1)} km`);
       console.log(`    Elevation: +${Math.round(processed.track.totalAscent)}m / -${Math.round(processed.track.totalDescent)}m`);
-      console.log(`    Waypoints: ${processed.waypoints.length}`);
+      console.log(`    Waypoints: ${processed.waypoints.length} on-trail, ${processed.offTrailWaypoints.length} off-trail`);
 
-      // Generate HTML page for this trail
+      // Generate HTML pages for this trail
       generateTrailPage(processed);
+      generateClimatePage(processed);
 
       trailIndex.push({
         id: processed.config.id,

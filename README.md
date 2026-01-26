@@ -126,7 +126,7 @@ Features:
 
 ## Deployment
 
-### Vercel (Recommended)
+### Vercel
 
 Vercel supports both the static site and serverless API functions.
 
@@ -161,75 +161,3 @@ vercel --prod
 curl https://your-url/api/health
 # Expected: {"status":"healthy","checks":{"kv":true,"overpass":true,"elevation":true}}
 ```
-
-### GitHub Pages (Static Only)
-
-Deploys automatically when you push to `main`. API endpoints won't work.
-
-1. Go to repo Settings → Pages → Source: **GitHub Actions**
-2. Push to `main` branch
-3. Site available at `https://username.github.io/gpx-infra/`
-
-See [INFRASTRUCTURE_SETUP.md](INFRASTRUCTURE_SETUP.md) for detailed architecture documentation.
-
-## Project Structure
-
-```
-gpx-infra/
-├── src/
-│   ├── lib/                    # Core processing library
-│   │   ├── types.ts            # Shared type definitions
-│   │   ├── gpx-parser.ts       # GPX XML parsing/generation
-│   │   ├── gpx-splitter.ts     # Track splitting logic
-│   │   ├── csv-processor.ts    # Travel plan CSV processing
-│   │   ├── distance.ts         # Haversine distance calculations
-│   │   ├── gpx-datasheet.ts    # GPX to datasheet conversion
-│   │   ├── api-client.ts       # API client with retry logic
-│   │   ├── poi-enrichment.ts   # POI query and enrichment
-│   │   ├── daylight.ts         # SunCalc wrapper for daylight
-│   │   ├── route-comparison.ts # Route diff and merge
-│   │   └── *.test.ts           # Unit tests
-│   │
-│   ├── web/                    # Static site
-│   │   ├── index.html          # Landing page
-│   │   ├── styles.css
-│   │   ├── tools/              # Tool pages
-│   │   │   ├── index.html      # Tools hub
-│   │   │   ├── splitter.html   # GPX Splitter
-│   │   │   ├── planner.html    # Travel Plan Processor
-│   │   │   ├── enrich.html     # POI Enrichment
-│   │   │   ├── compare.html    # Route Comparison
-│   │   │   └── daylight.html   # Daylight Calculator
-│   │   └── trails/             # Trail website
-│   │       ├── index.html      # Trail listing
-│   │       └── trail-template.html
-│   │
-│   └── api/                    # Serverless functions (Vercel)
-│       ├── overpass.ts         # OSM POI queries
-│       ├── elevation.ts        # Elevation data
-│       └── health.ts           # Health check endpoint
-│
-├── data/                       # Trail data
-│   ├── trails/                 # Source trail data
-│   │   └── <trail-id>/
-│   │       ├── trail.json      # Trail metadata
-│   │       ├── track.gpx       # GPX track
-│   │       └── waypoints.csv   # POI data
-│   └── generated/              # Build output
-│
-├── scripts/                    # Build scripts
-│   ├── build-trails.ts         # Process trail data
-│   ├── fetch-elevation.ts      # Fill missing elevation
-│   └── fetch-pois.ts           # Pre-fetch POIs
-│
-├── .github/workflows/          # CI/CD
-├── vercel.json                 # Vercel configuration
-├── package.json
-├── tsconfig.json
-├── vite.config.ts
-└── vitest.config.ts
-```
-
-## License
-
-MIT

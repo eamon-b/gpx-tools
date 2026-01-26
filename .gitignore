@@ -5,6 +5,7 @@ dist/
 
 # Generated trail data (built from source)
 public/data/generated/
+src/web/trails/*/
 
 # Environment files
 .env

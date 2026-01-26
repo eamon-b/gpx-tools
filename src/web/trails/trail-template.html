@@ -5,6 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{{TRAIL_NAME}} - GPX Tools</title>
   <link rel="stylesheet" href="../../styles.css">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+  <script defer src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
   <style>
     .trail-header {
       margin-bottom: 2rem;
@@ -25,6 +27,14 @@
       font-size: 0.75rem;
       text-transform: uppercase;
       opacity: 0.7;
+    }
+    .trail-nav-link {
+      color: var(--accent-color, #2196F3);
+      text-decoration: none;
+      font-weight: 500;
+    }
+    .trail-nav-link:hover {
+      text-decoration: underline;
     }
     .trail-stats {
       display: grid;
@@ -100,6 +110,23 @@
     .waypoints-table tr.highlight-resupply:hover {
       background: #c8e6c9;
     }
+    /* Only waypoint rows are clickable, not variant rows */
+    .waypoints-table tbody tr[data-waypoint-index] {
+      cursor: pointer;
+    }
+    .waypoints-table tbody tr {
+      transition: background 0.3s;
+    }
+    .waypoints-table tr.highlight-selected {
+      background: #bbdefb !important;
+    }
+    .popup-show-in-table {
+      display: inline-block;
+      margin-top: 6px;
+      color: #1976D2;
+      text-decoration: underline;
+      cursor: pointer;
+    }
     .waypoint-type {
       font-size: 0.7rem;
       padding: 0.2rem 0.4rem;
@@ -125,6 +152,24 @@
     .waypoint-type.type-mountain {
       background: #bcaaa4;
     }
+    .waypoint-type.type-side-trip {
+      background: #f8bbd0;
+    }
+    .waypoint-type.type-accommodation {
+      background: #ce93d8;
+    }
+    .waypoint-type.type-caravan-park {
+      background: #c5e1a5;
+    }
+    .waypoint-type.type-trail-head {
+      background: #ffe082;
+    }
+    .waypoint-type.type-food {
+      background: #ffab91;
+    }
+    .waypoint-type.type-road-crossing {
+      background: #b0bec5;
+    }
     .waypoints-list {
       list-style: none;
       padding: 0;
@@ -138,23 +183,6 @@
     }
     .waypoints-list li:last-child {
       border-bottom: none;
-    }
-    .poi-section {
-      margin-top: 2rem;
-    }
-    .poi-category {
-      margin-bottom: 1.5rem;
-    }
-    .poi-category h4 {
-      margin-bottom: 0.5rem;
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
-    }
-    .poi-count {
-      font-size: 0.875rem;
-      opacity: 0.7;
-      font-weight: normal;
     }
     /* Inline variant rows in waypoints table */
     .variant-row {
@@ -213,6 +241,79 @@
     .section-header h3 {
       margin: 0;
     }
+    /* Trail map styles */
+    .trail-map {
+      width: 100%;
+      height: 400px;
+      background: var(--bg-secondary, #f5f5f5);
+      border-radius: 8px;
+      margin: 1rem 0 2rem 0;
+      position: relative;
+      z-index: 0;
+    }
+    .elevation-hover-marker {
+      width: 12px;
+      height: 12px;
+      background: #ff5722;
+      border: 2px solid white;
+      border-radius: 50%;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+    }
+    .elevation-profile .hover-line {
+      position: absolute;
+      top: 0;
+      bottom: 30px;
+      width: 2px;
+      background: #ff5722;
+      pointer-events: none;
+      display: none;
+    }
+    .elevation-profile .hover-tooltip {
+      position: absolute;
+      top: 5px;
+      background: rgba(0,0,0,0.8);
+      color: white;
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-size: 12px;
+      pointer-events: none;
+      display: none;
+      white-space: nowrap;
+    }
+    /* Waypoint marker styles */
+    .waypoint-marker {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      font-size: 14px;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.4);
+      border: 2px solid white;
+    }
+    .waypoint-marker.town { background: #ffcc80; }
+    .waypoint-marker.hut { background: #b39ddb; }
+    .waypoint-marker.campsite { background: #a5d6a7; }
+    .waypoint-marker.water { background: #81d4fa; }
+    .waypoint-marker.water-tank { background: #80cbc4; }
+    .waypoint-marker.mountain { background: #bcaaa4; }
+    .waypoint-marker.side-trip { background: #f8bbd0; }
+    .waypoint-marker.caravan-park { background: #c5e1a5; }
+    .waypoint-marker.trail-head { background: #ffe082; }
+    .waypoint-marker.food { background: #ffab91; }
+    .waypoint-marker.road-crossing { background: #b0bec5; }
+    .waypoint-marker.waypoint { background: #e0e0e0; }
+    @media (max-width: 768px) {
+      .trail-map {
+        height: 300px;
+      }
+    }
+    @media (max-width: 480px) {
+      .trail-map {
+        height: 250px;
+      }
+    }
     .export-btn {
       padding: 0.5rem 1rem;
       background: var(--accent-color, #2196F3);
@@ -229,6 +330,228 @@
     .export-btn:disabled {
       background: #ccc;
       cursor: not-allowed;
+    }
+    .export-buttons {
+      display: flex;
+      gap: 0.5rem;
+    }
+    /* Direction controls in trail-meta */
+    .direction-controls {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .direction-controls strong {
+      display: block;
+      margin-right: 0.25rem;
+    }
+    #direction-label {
+      font-weight: 600;
+      min-width: 4em;
+    }
+    .direction-btn {
+      padding: 0.5rem 1rem;
+      background: var(--accent-color, #2196F3);
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 0.875rem;
+      font-weight: 500;
+      transition: background 0.2s;
+    }
+    .direction-btn:hover {
+      background: var(--accent-hover, #1976D2);
+    }
+    .direction-btn[aria-pressed="true"] {
+      background: #ff9800;
+    }
+    .direction-btn[aria-pressed="true"]:hover {
+      background: #f57c00;
+    }
+    .direction-loading {
+      font-size: 0.75rem;
+      color: var(--text-secondary, #666);
+      font-style: italic;
+    }
+    /* Expandable waypoint rows */
+    .expand-chevron {
+      display: inline-block;
+      width: 0.7rem;
+      margin-right: 0.25rem;
+      transition: transform 150ms ease;
+      font-size: 0.6rem;
+      color: var(--text-secondary, #666);
+    }
+    .expand-chevron.expanded {
+      transform: rotate(90deg);
+    }
+    .has-description-indicator {
+      display: inline-block;
+      width: 6px;
+      height: 6px;
+      background: #2196F3;
+      border-radius: 50%;
+      margin-left: 0.4rem;
+      opacity: 0.7;
+      vertical-align: middle;
+    }
+    .waypoint-expanded {
+      background: #e3f2fd !important;
+    }
+    .waypoint-detail-row td {
+      padding: 0 !important;
+      border-bottom: 1px solid var(--border-color, #ddd);
+    }
+    .waypoint-detail-panel {
+      padding: 0.75rem 1rem;
+      background: #fafafa;
+      border-left: 3px solid #2196F3;
+      animation: fadeIn 150ms ease;
+    }
+    .waypoint-detail-panel.no-description .waypoint-detail-description {
+      display: none;
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
+    .waypoint-detail-description {
+      white-space: pre-line;
+      color: var(--text-secondary, #555);
+      font-size: 0.85rem;
+      margin-bottom: 0.75rem;
+      line-height: 1.5;
+    }
+    .waypoint-detail-description a {
+      color: #1976D2;
+      word-break: break-all;
+    }
+    .waypoint-detail-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 1rem;
+      align-items: center;
+    }
+    .waypoint-show-on-map {
+      color: #1976D2;
+      text-decoration: underline;
+      cursor: pointer;
+      font-size: 0.85rem;
+    }
+    .waypoint-show-on-map:hover {
+      color: #1565C0;
+    }
+    .waypoint-detail-coords {
+      font-size: 0.8rem;
+      color: var(--text-secondary, #888);
+    }
+    .waypoint-detail-coords a {
+      color: #1976D2;
+      margin-left: 0.25rem;
+    }
+    /* Variant expandable state */
+    .variant-row.variant-expandable { cursor: pointer; }
+    .variant-row .expand-chevron {
+      display: inline-block;
+      width: 0.7rem;
+      margin-right: 0.25rem;
+      transition: transform 150ms ease;
+      font-size: 0.6rem;
+    }
+    .variant-row .expand-chevron.expanded { transform: rotate(90deg); }
+    .variant-row.variant-expanded { background: #fff8e1 !important; }
+    .variant-row.type-side-trip.variant-expanded { background: #fce4ec !important; }
+    /* Waypoints indicator on variant rows */
+    .has-waypoints-indicator {
+      display: inline-block;
+      width: 6px;
+      height: 6px;
+      background: #9c27b0;
+      border-radius: 50%;
+      margin-left: 0.4rem;
+    }
+    .variant-row.type-alternate .has-waypoints-indicator { background: #ff9800; }
+    /* Variant detail panel */
+    .variant-detail-panel {
+      padding: 1rem;
+      background: #fffaf0;
+      border-left: 3px solid #ff9800;
+      animation: fadeIn 150ms ease;
+    }
+    .variant-detail-panel.type-side-trip {
+      background: #fdf2f8;
+      border-left-color: #9c27b0;
+    }
+    .variant-detail-row td {
+      padding: 0 !important;
+      border-bottom: 1px solid var(--border-color, #ddd);
+    }
+    /* Header stats */
+    .variant-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 1rem; }
+    .variant-headline-stats { display: flex; flex-wrap: wrap; gap: 0.75rem 1.5rem; }
+    .variant-stat { font-size: 0.85rem; }
+    .variant-show-on-map {
+      color: #1976D2;
+      text-decoration: underline;
+      cursor: pointer;
+      font-size: 0.85rem;
+      white-space: nowrap;
+    }
+    /* Nested waypoints table */
+    .variant-waypoints h4 { margin: 0 0 0.5rem 0; font-size: 0.9rem; }
+    .variant-waypoints-table { width: 100%; background: white; border-radius: 4px; border-collapse: collapse; }
+    .variant-waypoints-table th {
+      background: #f5f5f5;
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      padding: 0.4rem 0.6rem;
+      text-align: left;
+      border-bottom: 1px solid #ddd;
+    }
+    .variant-waypoints-table td {
+      font-size: 0.8rem;
+      padding: 0.4rem 0.6rem;
+      border-bottom: 1px solid #eee;
+    }
+    .variant-waypoints-table td.numeric { text-align: right; font-variant-numeric: tabular-nums; }
+    .variant-waypoint-row { cursor: pointer; }
+    .variant-waypoint-row:hover { background: #f5f5f5; }
+    .variant-wp-detail-row td {
+      padding: 0 !important;
+      border-bottom: 1px solid #eee;
+    }
+    /* No waypoints message */
+    .variant-no-waypoints { font-size: 0.85rem; color: #888; font-style: italic; margin: 0; }
+    /* Off-trail waypoints section */
+    .off-trail-header-row td {
+      background: #f5f5f5;
+      padding: 0.75rem !important;
+      border-top: 2px solid #ddd;
+      font-size: 0.85rem;
+      color: var(--text-secondary, #666);
+    }
+    .off-trail-count {
+      font-weight: normal;
+      color: var(--text-secondary, #888);
+    }
+    .off-trail-row {
+      opacity: 0.7;
+      cursor: pointer;
+    }
+    .off-trail-row:hover {
+      opacity: 1;
+      background: var(--bg-secondary, #f5f5f5);
+    }
+    .off-trail-row.waypoint-expanded {
+      opacity: 1;
+    }
+    .off-trail-distance {
+      font-size: 0.8rem;
+      color: var(--text-secondary, #888);
+      text-align: left !important;
+      white-space: nowrap;
     }
   </style>
 </head>
@@ -249,12 +572,15 @@
             {{TRAIL_REGION}}
           </div>
           <div class="trail-meta-item">
-            <strong>Difficulty</strong>
-            {{TRAIL_DIFFICULTY}}
+            <a href="climate.html" class="trail-nav-link">Climate Data</a>
           </div>
-          <div class="trail-meta-item">
-            <strong>Best Months</strong>
-            {{TRAIL_BEST_MONTHS}}
+          <div class="trail-meta-item direction-controls">
+            <strong>Direction</strong>
+            <span id="direction-label">Start → End</span>
+            <button id="reverse-direction-btn" class="direction-btn" aria-pressed="false" title="Reverse trail direction">
+              ↔ Reverse Direction
+            </button>
+            <span id="direction-loading" class="direction-loading" hidden>...</span>
           </div>
         </div>
       </div>
@@ -278,6 +604,9 @@
         </div>
       </div>
 
+      <h3>Trail Map</h3>
+      <div id="trail-map" class="trail-map"></div>
+
       <h3>Elevation Profile</h3>
       <div class="elevation-profile">
         <canvas id="elevation-canvas"></canvas>
@@ -285,15 +614,13 @@
 
       <div class="section-header">
         <h3>Waypoints</h3>
-        <button id="export-btn" class="export-btn" disabled>Export CSV</button>
+        <div class="export-buttons">
+          <button id="export-csv-btn" class="export-btn" disabled>Download CSV</button>
+          <button id="export-gpx-btn" class="export-btn" disabled>Download GPX</button>
+        </div>
       </div>
       <div class="waypoints-table-wrapper" id="waypoints-container">
         <p>Loading waypoints...</p>
-      </div>
-
-      <div class="poi-section" id="poi-section" hidden>
-        <h3>Points of Interest</h3>
-        <div id="poi-categories"></div>
       </div>
     </section>
 
@@ -303,387 +630,8 @@
   </div>
 
   <script type="module">
-    const TRAIL_ID = '{{TRAIL_ID}}';
-    const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-
-    async function loadTrailData() {
-      try {
-        const response = await fetch(`../../data/generated/${TRAIL_ID}.json`);
-        if (!response.ok) throw new Error('Trail data not found');
-        return await response.json();
-      } catch (error) {
-        console.error('Failed to load trail data:', error);
-        return null;
-      }
-    }
-
-    function updateStats(trail) {
-      document.getElementById('distance').textContent = trail.track.totalDistance.toFixed(1);
-      document.getElementById('ascent').textContent = Math.round(trail.track.totalAscent);
-      document.getElementById('descent').textContent = Math.round(trail.track.totalDescent);
-      document.getElementById('points').textContent = trail.track.points.length.toLocaleString();
-    }
-
-    function drawElevationProfile(points) {
-      const canvas = document.getElementById('elevation-canvas');
-      const ctx = canvas.getContext('2d');
-      const rect = canvas.getBoundingClientRect();
-
-      canvas.width = rect.width * window.devicePixelRatio;
-      canvas.height = rect.height * window.devicePixelRatio;
-      ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
-
-      if (points.length === 0) return;
-
-      const elevations = points.map(p => p.ele);
-      const distances = points.map(p => p.dist);
-      const minEle = Math.min(...elevations);
-      const maxEle = Math.max(...elevations);
-      const maxDist = Math.max(...distances);
-
-      const padding = { top: 20, right: 20, bottom: 30, left: 50 };
-      const width = rect.width - padding.left - padding.right;
-      const height = rect.height - padding.top - padding.bottom;
-
-      // Draw grid
-      ctx.strokeStyle = '#ddd';
-      ctx.lineWidth = 1;
-      for (let i = 0; i <= 4; i++) {
-        const y = padding.top + (height / 4) * i;
-        ctx.beginPath();
-        ctx.moveTo(padding.left, y);
-        ctx.lineTo(padding.left + width, y);
-        ctx.stroke();
-      }
-
-      // Draw profile
-      ctx.beginPath();
-      ctx.strokeStyle = '#2196F3';
-      ctx.lineWidth = 2;
-
-      points.forEach((point, i) => {
-        const x = padding.left + (point.dist / maxDist) * width;
-        const y = padding.top + height - ((point.ele - minEle) / (maxEle - minEle)) * height;
-
-        if (i === 0) {
-          ctx.moveTo(x, y);
-        } else {
-          ctx.lineTo(x, y);
-        }
-      });
-      ctx.stroke();
-
-      // Fill under curve
-      ctx.lineTo(padding.left + width, padding.top + height);
-      ctx.lineTo(padding.left, padding.top + height);
-      ctx.closePath();
-      ctx.fillStyle = 'rgba(33, 150, 243, 0.1)';
-      ctx.fill();
-
-      // Draw labels
-      ctx.fillStyle = '#666';
-      ctx.font = '12px system-ui, sans-serif';
-      ctx.textAlign = 'right';
-      ctx.fillText(`${Math.round(maxEle)}m`, padding.left - 5, padding.top + 10);
-      ctx.fillText(`${Math.round(minEle)}m`, padding.left - 5, padding.top + height);
-
-      ctx.textAlign = 'center';
-      ctx.fillText('0 km', padding.left, padding.top + height + 20);
-      ctx.fillText(`${maxDist.toFixed(0)} km`, padding.left + width, padding.top + height + 20);
-    }
-
-    function renderWaypoints(waypoints, alternates, sideTrips) {
-      const container = document.getElementById('waypoints-container');
-
-      if (!waypoints || waypoints.length === 0) {
-        container.innerHTML = '<p>No waypoints defined</p>';
-        return;
-      }
-
-      // Resupply keywords to detect resupply points
-      const resupplyKeywords = ['grocer', 'market', 'foodland', 'iga', 'wool', 'coles', 'general', 'servo'];
-
-      function isResupply(wp) {
-        const text = ((wp.name || '') + ' ' + (wp.description || '')).toLowerCase();
-        return resupplyKeywords.some(kw => text.includes(kw));
-      }
-
-      function getRowClass(wp) {
-        if (wp.type === 'town') return 'highlight-town';
-        if (isResupply(wp)) return 'highlight-resupply';
-        return '';
-      }
-
-      function getTypeClass(type) {
-        const typeMap = {
-          'town': 'type-town',
-          'hut': 'type-hut',
-          'campsite': 'type-campsite',
-          'water': 'type-water',
-          'water-tank': 'type-water-tank',
-          'mountain': 'type-mountain'
-        };
-        return typeMap[type] || '';
-      }
-
-      // Build a combined list of waypoints and variant markers, sorted by distance
-      const allVariants = [...(alternates || []), ...(sideTrips || [])];
-      const tableRows = [];
-
-      // Add waypoints
-      for (const wp of waypoints) {
-        tableRows.push({
-          rowType: 'waypoint',
-          distance: wp.totalDistance ?? 0,
-          data: wp
-        });
-      }
-
-      // Add variant start/end markers
-      for (const variant of allVariants) {
-        if (variant.startDistance != null) {
-          tableRows.push({
-            rowType: 'variant-start',
-            distance: variant.startDistance,
-            data: variant
-          });
-        }
-        // For alternates, add rejoin marker
-        if (variant.type === 'alternate' && variant.endDistance != null) {
-          tableRows.push({
-            rowType: 'variant-end',
-            distance: variant.endDistance,
-            data: variant
-          });
-        }
-      }
-
-      // Sort by distance along route
-      tableRows.sort((a, b) => a.distance - b.distance);
-
-      function renderWaypointRow(wp) {
-        return `
-          <tr class="${getRowClass(wp)}">
-            <td>${wp.name || 'Unnamed'}</td>
-            <td><span class="waypoint-type ${getTypeClass(wp.type)}">${wp.type || 'waypoint'}</span></td>
-            <td class="numeric">${wp.elevation ?? '-'}</td>
-            <td class="numeric">${wp.distance?.toFixed(1) ?? '-'}</td>
-            <td class="numeric">${wp.totalDistance?.toFixed(1) ?? '-'}</td>
-            <td class="numeric">${wp.ascent ?? '-'}</td>
-            <td class="numeric">${wp.descent ?? '-'}</td>
-            <td class="numeric">${wp.totalAscent ?? '-'}</td>
-            <td class="numeric">${wp.totalDescent ?? '-'}</td>
-          </tr>
-        `;
-      }
-
-      function renderVariantRow(variant, isStart) {
-        const typeClass = variant.type === 'alternate' ? 'type-alternate' : 'type-side-trip';
-        const typeLabel = variant.type === 'alternate' ? 'Alternate' : 'Side Trip';
-        const actionLabel = isStart
-          ? (variant.type === 'alternate' ? 'branches' : 'starts')
-          : 'rejoins';
-        const distance = isStart ? variant.startDistance : variant.endDistance;
-
-        return `
-          <tr class="variant-row ${typeClass}">
-            <td colspan="2">
-              <span class="variant-marker ${typeClass}">
-                <span class="variant-icon">${isStart ? '↗' : '↘'}</span>
-                <strong>${variant.name}</strong>
-                <span class="variant-action">${actionLabel} here</span>
-              </span>
-            </td>
-            <td colspan="3" class="variant-stats-cell">
-              <span class="variant-inline-stats">
-                ${variant.distance} km · +${variant.elevation?.ascent || 0}m / -${variant.elevation?.descent || 0}m
-              </span>
-            </td>
-            <td class="numeric">${distance?.toFixed(1) ?? '-'}</td>
-            <td colspan="3">
-              <span class="variant-type-badge ${typeClass}">${typeLabel}</span>
-            </td>
-          </tr>
-        `;
-      }
-
-      const tableHtml = `
-        <table class="waypoints-table">
-          <thead>
-            <tr>
-              <th>Location</th>
-              <th>Type</th>
-              <th>Elev (m)</th>
-              <th>Dist (km)</th>
-              <th>Total (km)</th>
-              <th>Gain (m)</th>
-              <th>Loss (m)</th>
-              <th>Total Gain</th>
-              <th>Total Loss</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${tableRows.map(row => {
-              if (row.rowType === 'waypoint') {
-                return renderWaypointRow(row.data);
-              } else if (row.rowType === 'variant-start') {
-                return renderVariantRow(row.data, true);
-              } else {
-                return renderVariantRow(row.data, false);
-              }
-            }).join('')}
-          </tbody>
-        </table>
-      `;
-
-      container.innerHTML = tableHtml;
-    }
-
-    function exportDatasheet(trail) {
-      const { config, track, waypoints, alternates, sideTrips } = trail;
-
-      // Build CSV content
-      const lines = [];
-
-      // Header with trail info
-      lines.push(`# ${config.name} - Trail Datasheet`);
-      lines.push(`# Region: ${config.region}`);
-      lines.push(`# Total Distance: ${track.totalDistance.toFixed(1)} km`);
-      lines.push(`# Total Ascent: ${Math.round(track.totalAscent)} m`);
-      lines.push(`# Total Descent: ${Math.round(track.totalDescent)} m`);
-      lines.push(`# Generated: ${new Date().toISOString().split('T')[0]}`);
-      lines.push('');
-
-      // Waypoints table header
-      lines.push('Location,Type,Elevation (m),Distance (km),Total (km),Gain (m),Loss (m),Total Gain (m),Total Loss (m),Notes');
-
-      // Add waypoints
-      for (const wp of waypoints || []) {
-        const row = [
-          `"${(wp.name || 'Unnamed').replace(/"/g, '""')}"`,
-          wp.type || 'waypoint',
-          wp.elevation ?? '',
-          wp.distance?.toFixed(1) ?? '',
-          wp.totalDistance?.toFixed(1) ?? '',
-          wp.ascent ?? '',
-          wp.descent ?? '',
-          wp.totalAscent ?? '',
-          wp.totalDescent ?? '',
-          `"${(wp.description || '').replace(/"/g, '""')}"`
-        ];
-        lines.push(row.join(','));
-      }
-
-      // Add alternates section if present
-      if (alternates && alternates.length > 0) {
-        lines.push('');
-        lines.push('# Alternate Routes');
-        lines.push('Name,Type,Distance (km),Ascent (m),Descent (m),Start Distance (km),End Distance (km)');
-        for (const alt of alternates) {
-          const row = [
-            `"${(alt.name || 'Unnamed').replace(/"/g, '""')}"`,
-            alt.type || 'alternate',
-            alt.distance ?? '',
-            alt.elevation?.ascent ?? '',
-            alt.elevation?.descent ?? '',
-            alt.startDistance?.toFixed(1) ?? '',
-            alt.endDistance?.toFixed(1) ?? ''
-          ];
-          lines.push(row.join(','));
-        }
-      }
-
-      // Add side trips section if present
-      if (sideTrips && sideTrips.length > 0) {
-        lines.push('');
-        lines.push('# Side Trips');
-        lines.push('Name,Type,Distance (km),Ascent (m),Descent (m),Start Distance (km)');
-        for (const trip of sideTrips) {
-          const row = [
-            `"${(trip.name || 'Unnamed').replace(/"/g, '""')}"`,
-            trip.type || 'side-trip',
-            trip.distance ?? '',
-            trip.elevation?.ascent ?? '',
-            trip.elevation?.descent ?? '',
-            trip.startDistance?.toFixed(1) ?? ''
-          ];
-          lines.push(row.join(','));
-        }
-      }
-
-      const csvContent = lines.join('\n');
-      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-      const url = URL.createObjectURL(blob);
-
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `${config.id || 'trail'}-datasheet.csv`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
-    }
-
-    function renderPOIs(pois) {
-      if (!pois || pois.length === 0) return;
-
-      const section = document.getElementById('poi-section');
-      const container = document.getElementById('poi-categories');
-      section.removeAttribute('hidden');
-
-      // Group by category
-      const grouped = {};
-      for (const poi of pois) {
-        if (!grouped[poi.category]) grouped[poi.category] = [];
-        grouped[poi.category].push(poi);
-      }
-
-      const categoryLabels = {
-        water: 'Water Sources',
-        camping: 'Camping',
-        resupply: 'Resupply',
-        transport: 'Transport',
-        emergency: 'Emergency'
-      };
-
-      container.innerHTML = Object.entries(grouped).map(([category, items]) => `
-        <div class="poi-category">
-          <h4>${categoryLabels[category] || category} <span class="poi-count">(${items.length})</span></h4>
-          <ul class="waypoints-list">
-            ${items.slice(0, 10).map(poi => `
-              <li>
-                <span>${poi.name || poi.tags?.amenity || poi.tags?.tourism || 'Unnamed'}</span>
-                <span class="waypoint-type">${(poi.distanceAlongTrail || 0).toFixed(1)} km</span>
-              </li>
-            `).join('')}
-            ${items.length > 10 ? `<li><em>...and ${items.length - 10} more</em></li>` : ''}
-          </ul>
-        </div>
-      `).join('');
-    }
-
-    async function init() {
-      const trail = await loadTrailData();
-      if (!trail) {
-        document.querySelector('.panel').innerHTML = '<p>Failed to load trail data.</p>';
-        return;
-      }
-
-      updateStats(trail);
-      drawElevationProfile(trail.track.points);
-      renderWaypoints(trail.waypoints, trail.alternates, trail.sideTrips);
-      renderPOIs(trail.pois);
-
-      // Enable export button
-      const exportBtn = document.getElementById('export-btn');
-      exportBtn.disabled = false;
-      exportBtn.addEventListener('click', () => exportDatasheet(trail));
-
-      // Redraw on resize
-      window.addEventListener('resize', () => drawElevationProfile(trail.track.points));
-    }
-
-    init();
+    import { initTrailViewer } from '../trail-viewer.ts';
+    initTrailViewer('{{TRAIL_ID}}');
   </script>
 </body>
 </html>
