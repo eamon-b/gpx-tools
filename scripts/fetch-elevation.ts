@@ -48,7 +48,7 @@ const SCRIPTS_DIR = path.dirname(
     : new URL(import.meta.url).pathname
 );
 const PROJECT_ROOT = path.resolve(SCRIPTS_DIR, '..');
-const GENERATED_DIR = path.join(PROJECT_ROOT, 'data/generated');
+const GENERATED_DIR = path.join(PROJECT_ROOT, 'public/data/generated');
 
 const OPEN_ELEVATION_URL = 'https://api.open-elevation.com/api/v1/lookup';
 const BATCH_SIZE = 100; // Open Elevation recommends max 100 points per request

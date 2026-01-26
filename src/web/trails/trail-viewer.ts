@@ -89,6 +89,7 @@ let waypointMarkers: Array<{ marker: L.Marker; waypoint: Waypoint; index: number
 let expandedWaypointIndex: number | null = null;
 let expandedVariantKey: string | null = null;
 let expandedVariantWaypointIndex: number | null = null;
+let chartPadding = { top: 20, right: 20, bottom: 30, left: 50 };
 
 // Trail direction state management
 const trailState = {
@@ -125,6 +126,26 @@ function getMinMax(arr: number[]): { min: number; max: number } {
     if (arr[i] > max) max = arr[i];
   }
   return { min, max };
+}
+
+// Calculate nice round-number axis ticks for chart axes
+function niceAxisTicks(min: number, max: number, maxTicks: number): number[] {
+  const range = max - min;
+  if (range <= 0) return [min];
+  const roughStep = range / maxTicks;
+  const magnitude = Math.pow(10, Math.floor(Math.log10(roughStep)));
+  const normalized = roughStep / magnitude;
+  let niceStep: number;
+  if (normalized <= 1) niceStep = 1 * magnitude;
+  else if (normalized <= 2) niceStep = 2 * magnitude;
+  else if (normalized <= 5) niceStep = 5 * magnitude;
+  else niceStep = 10 * magnitude;
+  const start = Math.ceil(min / niceStep) * niceStep;
+  const ticks: number[] = [];
+  for (let v = start; v <= max; v += niceStep) {
+    ticks.push(Math.round(v * 1e6) / 1e6); // avoid floating point drift
+  }
+  return ticks;
 }
 
 // Debounce helper for resize events
@@ -194,6 +215,8 @@ function initMap(trail: Trail): void {
       maxZoom: 17,
       attribution: 'Map data: &copy; OpenStreetMap contributors, SRTM | Map style: &copy; OpenTopoMap'
     }).addTo(map);
+
+    L.control.scale({ metric: true, imperial: false }).addTo(map);
 
     maxDistance = trail.track.totalDistance;
 
@@ -337,7 +360,7 @@ function handleMapHover(e: L.LeafletMouseEvent): void {
 function showElevationHover(distance: number, elevation: number): void {
   const canvas = document.getElementById('elevation-canvas') as HTMLCanvasElement;
   const rect = canvas.getBoundingClientRect();
-  const padding = { top: 20, right: 20, bottom: 30, left: 50 };
+  const padding = chartPadding;
   const width = rect.width - padding.left - padding.right;
 
   const xPos = padding.left + (distance / maxDistance) * width;
@@ -729,7 +752,7 @@ function setupElevationHover(): void {
     if (!trackPoints.length || !map) return;
 
     const rect = canvas.getBoundingClientRect();
-    const padding = { top: 20, right: 20, bottom: 30, left: 50 };
+    const padding = chartPadding;
     const width = rect.width - padding.left - padding.right;
 
     const x = e.clientX - rect.left - padding.left;
@@ -759,6 +782,34 @@ function setupElevationHover(): void {
     }
     hideElevationHover();
   });
+
+  canvas.addEventListener('click', (e) => {
+    if (!trackPoints.length || !map) return;
+
+    const rect = canvas.getBoundingClientRect();
+    const padding = chartPadding;
+    const width = rect.width - padding.left - padding.right;
+
+    const x = e.clientX - rect.left - padding.left;
+    if (x < 0 || x > width) return;
+
+    const distance = (x / width) * maxDistance;
+    const nearestIndex = findNearestByDistance(trackPoints, distance);
+    const nearestPoint = trackPoints[nearestIndex];
+
+    if (nearestPoint) {
+      hoverMarker!.setLatLng([nearestPoint.lat, nearestPoint.lon]);
+      if (!map.hasLayer(hoverMarker!)) {
+        hoverMarker!.addTo(map);
+      }
+
+      document.getElementById('trail-map')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      const targetZoom = Math.max(map.getZoom(), 14);
+      map.setView([nearestPoint.lat, nearestPoint.lon], targetZoom);
+    }
+  });
+
+  canvas.style.cursor = 'pointer';
 }
 
 async function loadTrailData(trailId: string): Promise<Trail | null> {
@@ -795,27 +846,65 @@ function drawElevationProfile(points: TrackPoint[]): void {
   const { min: minEle, max: maxEle } = getMinMax(elevations);
   const { max: maxDist } = getMinMax(distances);
 
-  const padding = { top: 20, right: 20, bottom: 30, left: 50 };
+  const eleTicks = niceAxisTicks(minEle, maxEle, 4);
+  const distTicks = niceAxisTicks(0, maxDist, 5);
+
+  // Measure the widest elevation label to size left padding
+  ctx.font = '12px system-ui, sans-serif';
+  let maxLabelWidth = 0;
+  for (const tick of eleTicks) {
+    const w = ctx.measureText(`${Math.round(tick)}m`).width;
+    if (w > maxLabelWidth) maxLabelWidth = w;
+  }
+
+  chartPadding = { top: 20, right: 20, bottom: 30, left: maxLabelWidth + 15 };
+  const padding = chartPadding;
   const width = rect.width - padding.left - padding.right;
   const height = rect.height - padding.top - padding.bottom;
 
-  ctx.strokeStyle = '#ddd';
-  ctx.lineWidth = 1;
-  for (let i = 0; i <= 4; i++) {
-    const y = padding.top + (height / 4) * i;
+  // Expand elevation range to encompass the tick boundaries
+  const eleMin = eleTicks.length > 0 ? Math.min(minEle, eleTicks[0]) : minEle;
+  const eleMax = eleTicks.length > 0 ? Math.max(maxEle, eleTicks[eleTicks.length - 1]) : maxEle;
+  const eleRange = eleMax - eleMin || 1;
+
+  // Draw elevation (Y) axis grid lines and labels
+  ctx.fillStyle = '#666';
+  ctx.font = '12px system-ui, sans-serif';
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'middle';
+  for (const tick of eleTicks) {
+    const y = padding.top + height - ((tick - eleMin) / eleRange) * height;
+    ctx.strokeStyle = '#ddd';
+    ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(padding.left, y);
     ctx.lineTo(padding.left + width, y);
     ctx.stroke();
+    ctx.fillText(`${Math.round(tick)}m`, padding.left - 5, y);
   }
 
+  // Draw distance (X) axis grid lines and labels
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  for (const tick of distTicks) {
+    const x = padding.left + (tick / maxDist) * width;
+    ctx.strokeStyle = '#eee';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x, padding.top);
+    ctx.lineTo(x, padding.top + height);
+    ctx.stroke();
+    ctx.fillText(`${Math.round(tick)} km`, x, padding.top + height + 5);
+  }
+
+  // Draw elevation profile line
   ctx.beginPath();
   ctx.strokeStyle = '#2196F3';
   ctx.lineWidth = 2;
 
   points.forEach((point, i) => {
     const x = padding.left + (point.dist / maxDist) * width;
-    const y = padding.top + height - ((point.ele - minEle) / (maxEle - minEle)) * height;
+    const y = padding.top + height - ((point.ele - eleMin) / eleRange) * height;
 
     if (i === 0) {
       ctx.moveTo(x, y);
@@ -825,21 +914,12 @@ function drawElevationProfile(points: TrackPoint[]): void {
   });
   ctx.stroke();
 
+  // Fill area under the curve
   ctx.lineTo(padding.left + width, padding.top + height);
   ctx.lineTo(padding.left, padding.top + height);
   ctx.closePath();
   ctx.fillStyle = 'rgba(33, 150, 243, 0.1)';
   ctx.fill();
-
-  ctx.fillStyle = '#666';
-  ctx.font = '12px system-ui, sans-serif';
-  ctx.textAlign = 'right';
-  ctx.fillText(`${Math.round(maxEle)}m`, padding.left - 5, padding.top + 10);
-  ctx.fillText(`${Math.round(minEle)}m`, padding.left - 5, padding.top + height);
-
-  ctx.textAlign = 'center';
-  ctx.fillText('0 km', padding.left, padding.top + height + 20);
-  ctx.fillText(`${maxDist.toFixed(0)} km`, padding.left + width, padding.top + height + 20);
 }
 
 function renderWaypoints(waypoints: Waypoint[] | undefined, alternates: RouteVariant[] | undefined, sideTrips: RouteVariant[] | undefined): void {
