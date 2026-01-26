@@ -69,6 +69,7 @@ let trackPoints: TrackPoint[] = [];
 let displayPoints: TrackPoint[] = [];
 let maxDistance = 0;
 let waypointMarkers: Array<{ marker: L.Marker; waypoint: Waypoint; index: number }> = [];
+let expandedWaypointIndex: number | null = null;
 
 // Trail direction state management
 const trailState = {
@@ -122,6 +123,16 @@ function escapeHtml(text: unknown): string {
   const div = document.createElement('div');
   div.textContent = String(text);
   return div.innerHTML;
+}
+
+// Convert plain-text URLs to clickable links (after HTML escaping)
+function autoLinkUrls(text: string): string {
+  const escaped = escapeHtml(text);
+  // Match URLs, avoiding trailing punctuation that's likely not part of the URL
+  return escaped.replace(
+    /https?:\/\/[^\s<]+[^\s<.,;:!?)\]]/g,
+    url => `<a href="${url}" target="_blank" rel="noopener noreferrer">${url}</a>`
+  );
 }
 
 // Binary search to find nearest point by distance (O(log n) instead of O(n))
@@ -360,6 +371,88 @@ function scrollToTableRow(waypointIndex: number): void {
 
   row.classList.add('highlight-selected');
   setTimeout(() => row.classList.remove('highlight-selected'), 2000);
+
+  // Expand the row (collapse any other expanded row first, per accordion behavior)
+  if (expandedWaypointIndex !== null && expandedWaypointIndex !== waypointIndex) {
+    collapseWaypointDetail(expandedWaypointIndex);
+  }
+  if (expandedWaypointIndex !== waypointIndex) {
+    const trail = trailState.currentTrail;
+    const wp = trail?.waypoints?.[waypointIndex];
+    if (wp) {
+      expandWaypointDetail(waypointIndex, wp);
+      expandedWaypointIndex = waypointIndex;
+    }
+  }
+}
+
+function toggleWaypointExpansion(waypointIndex: number): void {
+  if (expandedWaypointIndex === waypointIndex) {
+    collapseWaypointDetail(waypointIndex);
+    expandedWaypointIndex = null;
+  } else {
+    if (expandedWaypointIndex !== null) {
+      collapseWaypointDetail(expandedWaypointIndex);
+    }
+    const trail = trailState.currentTrail;
+    const wp = trail?.waypoints?.[waypointIndex];
+    if (wp) {
+      expandWaypointDetail(waypointIndex, wp);
+      expandedWaypointIndex = waypointIndex;
+    }
+  }
+}
+
+function expandWaypointDetail(waypointIndex: number, wp: Waypoint): void {
+  const row = document.getElementById(`waypoint-row-${waypointIndex}`);
+  if (!row) return;
+
+  // Add expanded styling to the row
+  row.classList.add('waypoint-expanded');
+  row.setAttribute('aria-expanded', 'true');
+  const chevron = row.querySelector('.expand-chevron');
+  if (chevron) chevron.classList.add('expanded');
+
+  // Determine colspan dynamically
+  const headerCells = document.querySelectorAll('.waypoints-table thead th');
+  const colspan = headerCells.length || 9;
+
+  // Build detail panel HTML
+  const hasDesc = !!wp.description;
+  const descHtml = hasDesc
+    ? `<div class="waypoint-detail-description">${autoLinkUrls(wp.description!)}</div>`
+    : '';
+  const coordsHtml = `<span class="waypoint-detail-coords">${wp.lat.toFixed(5)}, ${wp.lon.toFixed(5)} · <a href="https://www.google.com/maps?q=${wp.lat},${wp.lon}" target="_blank" rel="noopener noreferrer">Google Maps</a></span>`;
+
+  const detailHtml = `
+    <tr class="waypoint-detail-row" id="waypoint-detail-${waypointIndex}">
+      <td colspan="${colspan}">
+        <div class="waypoint-detail-panel${hasDesc ? '' : ' no-description'}">
+          ${descHtml}
+          <div class="waypoint-detail-actions">
+            <a href="#" class="waypoint-show-on-map" data-waypoint-index="${waypointIndex}">Show on map</a>
+            ${coordsHtml}
+          </div>
+        </div>
+      </td>
+    </tr>
+  `;
+
+  row.insertAdjacentHTML('afterend', detailHtml);
+}
+
+function collapseWaypointDetail(waypointIndex: number): void {
+  const row = document.getElementById(`waypoint-row-${waypointIndex}`);
+  if (row) {
+    row.classList.remove('waypoint-expanded');
+    row.setAttribute('aria-expanded', 'false');
+    const chevron = row.querySelector('.expand-chevron');
+    if (chevron) chevron.classList.remove('expanded');
+  }
+  const detailRow = document.getElementById(`waypoint-detail-${waypointIndex}`);
+  if (detailRow) {
+    detailRow.remove();
+  }
 }
 
 function setupElevationHover(): void {
@@ -568,11 +661,18 @@ function renderWaypoints(waypoints: Waypoint[] | undefined, alternates: RouteVar
   tableRows.sort((a, b) => a.distance - b.distance);
 
   function renderWaypointRow(wp: Waypoint, waypointIndex: number): string {
+    const descIndicator = wp.description
+      ? ' <span class="has-description-indicator" title="Has additional info"></span>'
+      : '';
     return `
       <tr class="${getRowClass(wp)}"
           id="waypoint-row-${waypointIndex}"
-          data-waypoint-index="${waypointIndex}">
-        <td>${wp.name || 'Unnamed'}</td>
+          data-waypoint-index="${waypointIndex}"
+          tabindex="0"
+          role="button"
+          aria-expanded="false"
+          aria-controls="waypoint-detail-${waypointIndex}">
+        <td><span class="expand-chevron">&#9654;</span> ${wp.name || 'Unnamed'}${descIndicator}</td>
         <td><span class="waypoint-type ${getTypeClass(wp.type)}">${wp.type || 'waypoint'}</span></td>
         <td class="numeric">${wp.elevation ?? '-'}</td>
         <td class="numeric">${wp.distance?.toFixed(1) ?? '-'}</td>
@@ -880,6 +980,7 @@ function getReversedTrail(): Trail {
 }
 
 function refreshDisplay(trail: Trail): void {
+  expandedWaypointIndex = null;
   trackPoints = trail.track.points;
   displayPoints = trail.track.displayPoints || trail.track.points;
   maxDistance = trail.track.totalDistance;
@@ -994,9 +1095,31 @@ export async function initTrailViewer(trailId: string): Promise<void> {
   updateDirectionUI(trailState.isReversed);
 
   document.querySelector('.waypoints-table tbody')?.addEventListener('click', (e) => {
-    const row = (e.target as HTMLElement).closest('tr[data-waypoint-index]');
+    const target = e.target as HTMLElement;
+
+    // Handle "Show on map" link clicks in detail panels
+    if (target.classList.contains('waypoint-show-on-map')) {
+      e.preventDefault();
+      handleTableRowClick(parseInt(target.dataset.waypointIndex!, 10));
+      return;
+    }
+
+    // Handle waypoint row clicks for expand/collapse
+    const row = target.closest('tr[data-waypoint-index]');
     if (row) {
-      handleTableRowClick(parseInt((row as HTMLElement).dataset.waypointIndex!, 10));
+      toggleWaypointExpansion(parseInt((row as HTMLElement).dataset.waypointIndex!, 10));
+    }
+  });
+
+  // Keyboard accessibility for waypoint rows
+  document.querySelector('.waypoints-table tbody')?.addEventListener('keydown', (e: Event) => {
+    const keyEvent = e as KeyboardEvent;
+    if (keyEvent.key === 'Enter' || keyEvent.key === ' ') {
+      const row = (e.target as HTMLElement).closest('tr[data-waypoint-index]');
+      if (row) {
+        e.preventDefault();
+        toggleWaypointExpansion(parseInt((row as HTMLElement).dataset.waypointIndex!, 10));
+      }
     }
   });
 

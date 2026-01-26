@@ -371,6 +371,82 @@
       color: var(--text-secondary, #666);
       font-style: italic;
     }
+    /* Expandable waypoint rows */
+    .expand-chevron {
+      display: inline-block;
+      width: 0.7rem;
+      margin-right: 0.25rem;
+      transition: transform 150ms ease;
+      font-size: 0.6rem;
+      color: var(--text-secondary, #666);
+    }
+    .expand-chevron.expanded {
+      transform: rotate(90deg);
+    }
+    .has-description-indicator {
+      display: inline-block;
+      width: 6px;
+      height: 6px;
+      background: #2196F3;
+      border-radius: 50%;
+      margin-left: 0.4rem;
+      opacity: 0.7;
+      vertical-align: middle;
+    }
+    .waypoint-expanded {
+      background: #e3f2fd !important;
+    }
+    .waypoint-detail-row td {
+      padding: 0 !important;
+      border-bottom: 1px solid var(--border-color, #ddd);
+    }
+    .waypoint-detail-panel {
+      padding: 0.75rem 1rem;
+      background: #fafafa;
+      border-left: 3px solid #2196F3;
+      animation: fadeIn 150ms ease;
+    }
+    .waypoint-detail-panel.no-description .waypoint-detail-description {
+      display: none;
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
+    .waypoint-detail-description {
+      white-space: pre-line;
+      color: var(--text-secondary, #555);
+      font-size: 0.85rem;
+      margin-bottom: 0.75rem;
+      line-height: 1.5;
+    }
+    .waypoint-detail-description a {
+      color: #1976D2;
+      word-break: break-all;
+    }
+    .waypoint-detail-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 1rem;
+      align-items: center;
+    }
+    .waypoint-show-on-map {
+      color: #1976D2;
+      text-decoration: underline;
+      cursor: pointer;
+      font-size: 0.85rem;
+    }
+    .waypoint-show-on-map:hover {
+      color: #1565C0;
+    }
+    .waypoint-detail-coords {
+      font-size: 0.8rem;
+      color: var(--text-secondary, #888);
+    }
+    .waypoint-detail-coords a {
+      color: #1976D2;
+      margin-left: 0.25rem;
+    }
   </style>
 </head>
 <body>
