@@ -1,6 +1,8 @@
 import { parseGpx } from '../../lib/gpx-parser.js';
 import { enrichRoute, exportPOIsToCSV, exportPOIsToGPX, getPOIName, getPOIDescription, type POIType, type EnrichedPOI } from '../../lib/poi-enrichment.js';
 import { saveAs } from 'file-saver';
+import L from 'leaflet';
+import { initializeMap, fitMapToBounds, createRoutePolyline, createCircleMarker, type MapPoint } from '../shared/map-utils.js';
 
 // DOM Elements
 const gpxUploadArea = document.getElementById('gpx-upload-area')!;
@@ -31,6 +33,9 @@ const maxDistanceInput = document.getElementById('max-distance') as HTMLInputEle
 let gpxFile: File | null = null;
 let enrichedPOIs: EnrichedPOI[] = [];
 let routeName = 'route';
+let routePoints: MapPoint[] = [];
+let map: L.Map | null = null;
+let poiMarkers: Map<string, L.CircleMarker[]> = new Map();
 
 // Utility functions
 function formatFileSize(bytes: number): string {
@@ -141,23 +146,25 @@ enrichBtn.addEventListener('click', async () => {
     const gpxData = parseGpx(content);
 
     // Get all track points
-    const points: { lat: number; lon: number }[] = [];
+    routePoints = [];
     for (const track of gpxData.tracks) {
       for (const segment of track.segments) {
-        points.push(...segment.points.map(p => ({ lat: p.lat, lon: p.lon })));
+        routePoints.push(...segment.points.map(p => ({ lat: p.lat, lon: p.lon })));
       }
     }
 
     // Also check routes if no tracks
-    if (points.length === 0) {
+    if (routePoints.length === 0) {
       for (const route of gpxData.routes) {
-        points.push(...route.points.map(p => ({ lat: p.lat, lon: p.lon })));
+        routePoints.push(...route.points.map(p => ({ lat: p.lat, lon: p.lon })));
       }
     }
 
-    if (points.length === 0) {
+    if (routePoints.length === 0) {
       throw new Error('No track or route points found in GPX file');
     }
+
+    const points = routePoints;
 
     const bufferKm = parseFloat(bufferKmInput.value) || 5;
     const maxDistanceFromRoute = parseFloat(maxDistanceInput.value) || 2;
@@ -195,6 +202,7 @@ enrichBtn.addEventListener('click', async () => {
     `;
 
     renderPOIList(enrichedPOIs);
+    renderMap(routePoints, enrichedPOIs);
     setupTabFilters();
 
   } catch (error) {
@@ -242,6 +250,74 @@ function getCategoryIcon(category: POIType): string {
   return icons[category] || '📍';
 }
 
+// Category colors for map markers
+const categoryColors: Record<POIType, string> = {
+  water: '#3b82f6',
+  camping: '#22c55e',
+  resupply: '#f97316',
+  transport: '#8b5cf6',
+  emergency: '#ef4444',
+};
+
+// Render map with route and POI markers
+function renderMap(points: MapPoint[], pois: EnrichedPOI[]): void {
+  // Initialize or clear map
+  if (map) {
+    map.remove();
+  }
+
+  map = initializeMap('poi-map');
+  poiMarkers.clear();
+
+  // Draw route
+  const routeLine = createRoutePolyline(points, '#3b82f6', { weight: 3, opacity: 0.7 });
+  routeLine.addTo(map);
+
+  // Add POI markers grouped by category
+  pois.forEach(poi => {
+    const color = categoryColors[poi.category] || '#6b7280';
+    const marker = createCircleMarker(poi.lat, poi.lon, color, {
+      radius: 8,
+      fillOpacity: 0.8,
+      popup: `
+        <strong>${getPOIName(poi)}</strong><br>
+        ${getPOIDescription(poi)}<br>
+        <em>${(poi.distanceFromRoute * 1000).toFixed(0)}m from route</em>
+      `,
+    });
+
+    marker.addTo(map!);
+
+    // Store marker by category for filtering
+    if (!poiMarkers.has(poi.category)) {
+      poiMarkers.set(poi.category, []);
+    }
+    poiMarkers.get(poi.category)!.push(marker);
+  });
+
+  // Fit map to show all points
+  fitMapToBounds(map, points);
+}
+
+// Update map markers visibility based on filter
+function updateMapMarkerVisibility(activeType: string): void {
+  if (!map) return;
+
+  poiMarkers.forEach((markers, category) => {
+    markers.forEach(marker => {
+      if (activeType === 'all' || category === activeType) {
+        if (!map!.hasLayer(marker)) {
+          marker.addTo(map!);
+        }
+      } else {
+        if (map!.hasLayer(marker)) {
+          map!.removeLayer(marker);
+        }
+      }
+    });
+  });
+}
+
 // Tab filtering
 function setupTabFilters(): void {
   const tabs = document.querySelectorAll('.poi-tab');
@@ -250,9 +326,10 @@ function setupTabFilters(): void {
       tabs.forEach(t => t.classList.remove('active'));
       tab.classList.add('active');
 
-      const type = (tab as HTMLElement).dataset.type;
+      const type = (tab as HTMLElement).dataset.type!;
       const items = poiList.querySelectorAll('.poi-item');
 
+      // Filter list items
       items.forEach(item => {
         const category = (item as HTMLElement).dataset.category;
         if (type === 'all' || category === type) {
@@ -261,6 +338,9 @@ function setupTabFilters(): void {
           (item as HTMLElement).style.display = 'none';
         }
       });
+
+      // Filter map markers
+      updateMapMarkerVisibility(type);
     });
   });
 }

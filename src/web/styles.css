@@ -1020,3 +1020,134 @@ footer a {
 footer a:hover {
   text-decoration: underline;
 }
+
+/* Map and chart sections */
+.map-section {
+  margin: 1.5rem -1rem;
+  padding: 1rem;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+
+.map-section h4 {
+  font-size: 0.875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  margin-bottom: 0.75rem;
+}
+
+.map-container {
+  height: 400px;
+  width: 100%;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.map-legend {
+  display: flex;
+  gap: 1rem;
+  margin-top: 0.75rem;
+  font-size: 0.875rem;
+  flex-wrap: wrap;
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+.legend-item::before {
+  content: '';
+  display: inline-block;
+  width: 16px;
+  height: 4px;
+  border-radius: 2px;
+}
+
+.legend-item.route1::before {
+  background: #3b82f6;
+}
+
+.legend-item.route2::before {
+  background: #f97316;
+}
+
+.legend-item.shared::before {
+  background: #22c55e;
+}
+
+.legend-item.water::before {
+  background: #3b82f6;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+.legend-item.camping::before {
+  background: #22c55e;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+.legend-item.resupply::before {
+  background: #f97316;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+.legend-item.transport::before {
+  background: #8b5cf6;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+.legend-item.emergency::before {
+  background: #ef4444;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+.chart-section {
+  margin: 1.5rem 0;
+  padding: 1rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.chart-section h4 {
+  font-size: 0.875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  margin-bottom: 0.75rem;
+}
+
+.chart-container {
+  position: relative;
+  height: 250px;
+}
+
+@media (max-width: 480px) {
+  .map-container {
+    height: 300px;
+  }
+
+  .chart-container {
+    height: 200px;
+  }
+
+  .map-legend {
+    justify-content: center;
+  }
+}

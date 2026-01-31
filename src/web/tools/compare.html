@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Route Comparison - GPX Tools</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
   <link rel="stylesheet" href="../styles.css">
 </head>
 <body>
@@ -117,6 +118,23 @@
               <span class="stat-label">Ascent Diff:</span>
               <span class="stat-value" id="ascent-diff"></span>
             </div>
+          </div>
+        </div>
+
+        <div class="map-section">
+          <h4>Route Map</h4>
+          <div id="comparison-map" class="map-container"></div>
+          <div class="map-legend">
+            <span class="legend-item route1">Route 1</span>
+            <span class="legend-item route2">Route 2</span>
+            <span class="legend-item shared">Shared</span>
+          </div>
+        </div>
+
+        <div class="chart-section">
+          <h4>Elevation Comparison</h4>
+          <div class="chart-container">
+            <canvas id="elevation-chart"></canvas>
           </div>
         </div>
 

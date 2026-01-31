@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Daylight Calculator - GPX Tools</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
   <link rel="stylesheet" href="../styles.css">
 </head>
 <body>
@@ -79,6 +80,18 @@
           <div class="stat-card">
             <span class="stat-value" id="longest-day"></span>
             <span class="stat-label">Longest Day</span>
+          </div>
+        </div>
+
+        <div class="map-section">
+          <h4>Daily Progress</h4>
+          <div id="daylight-map" class="map-container"></div>
+        </div>
+
+        <div class="chart-section">
+          <h4>Daylight Hours</h4>
+          <div class="chart-container">
+            <canvas id="daylight-chart"></canvas>
           </div>
         </div>
 

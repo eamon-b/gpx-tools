@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>POI Enrichment - GPX Tools</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
   <link rel="stylesheet" href="../styles.css">
 </head>
 <body>
@@ -79,6 +80,18 @@
       <div class="results" id="results" hidden>
         <h3>Results</h3>
         <div class="stats" id="stats"></div>
+
+        <div class="map-section">
+          <h4>Route & POIs</h4>
+          <div id="poi-map" class="map-container"></div>
+          <div class="map-legend">
+            <span class="legend-item water">💧 Water</span>
+            <span class="legend-item camping">⛺ Camping</span>
+            <span class="legend-item resupply">🛒 Resupply</span>
+            <span class="legend-item transport">🚌 Transport</span>
+            <span class="legend-item emergency">🏥 Emergency</span>
+          </div>
+        </div>
 
         <div class="poi-tabs">
           <button class="poi-tab active" data-type="all">All</button>

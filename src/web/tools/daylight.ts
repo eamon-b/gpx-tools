@@ -1,6 +1,12 @@
 import { parseGpx } from '../../lib/gpx-parser.js';
 import { createDaylightPlan, exportDaylightPlanToCSV, formatTime, formatDaylightHours, getMoonInfo, type DaylightPlan } from '../../lib/daylight.js';
 import { saveAs } from 'file-saver';
+import L from 'leaflet';
+import { Chart, registerables } from 'chart.js';
+import { initializeMap, fitMapToBounds, createRoutePolyline, createNumberedMarker, type MapPoint } from '../shared/map-utils.js';
+
+// Register Chart.js components
+Chart.register(...registerables);
 
 // DOM Elements
 const gpxUploadArea = document.getElementById('gpx-upload-area')!;
@@ -28,6 +34,9 @@ const downloadCsvBtn = document.getElementById('download-csv')!;
 // State
 let gpxFile: File | null = null;
 let daylightPlan: DaylightPlan | null = null;
+let routePoints: MapPoint[] = [];
+let map: L.Map | null = null;
+let daylightChart: Chart | null = null;
 
 // Set default start date to today
 startDateInput.valueAsDate = new Date();
@@ -126,23 +135,25 @@ calculateBtn.addEventListener('click', async () => {
     const gpxData = parseGpx(content);
 
     // Get all track points
-    const points: { lat: number; lon: number }[] = [];
+    routePoints = [];
     for (const track of gpxData.tracks) {
       for (const segment of track.segments) {
-        points.push(...segment.points.map(p => ({ lat: p.lat, lon: p.lon })));
+        routePoints.push(...segment.points.map(p => ({ lat: p.lat, lon: p.lon })));
       }
     }
 
     // Also check routes if no tracks
-    if (points.length === 0) {
+    if (routePoints.length === 0) {
       for (const route of gpxData.routes) {
-        points.push(...route.points.map(p => ({ lat: p.lat, lon: p.lon })));
+        routePoints.push(...route.points.map(p => ({ lat: p.lat, lon: p.lon })));
       }
     }
 
-    if (points.length === 0) {
+    if (routePoints.length === 0) {
       throw new Error('No track or route points found in GPX file');
     }
+
+    const points = routePoints;
 
     const dailyTargetKm = parseFloat(dailyTargetInput.value) || 25;
     const hikingSpeedKmh = parseFloat(hikingSpeedInput.value) || 4;
@@ -165,6 +176,10 @@ calculateBtn.addEventListener('click', async () => {
     nightHikingDaysEl.textContent = daylightPlan.nightHikingDays.toString();
     shortestDayEl.textContent = formatDaylightHours(daylightPlan.shortestDay.hours);
     longestDayEl.textContent = formatDaylightHours(daylightPlan.longestDay.hours);
+
+    // Render map and chart
+    renderDaylightMap(routePoints, daylightPlan);
+    renderDaylightChart(daylightPlan);
 
     renderDayList();
 
@@ -230,3 +245,133 @@ downloadCsvBtn.addEventListener('click', () => {
   const baseName = gpxFile?.name.replace('.gpx', '') || 'route';
   saveAs(blob, `${baseName}_daylight_plan.csv`);
 });
+
+// Render daylight map with day markers
+function renderDaylightMap(points: MapPoint[], plan: DaylightPlan): void {
+  // Initialize or clear map
+  if (map) {
+    map.remove();
+  }
+
+  map = initializeMap('daylight-map');
+
+  // Draw the full route in gray
+  const routeLine = createRoutePolyline(points, '#94a3b8', { weight: 3, opacity: 0.6 });
+  routeLine.addTo(map);
+
+  // Add day start markers
+  plan.days.forEach((day, i) => {
+    const dayNum = i + 1;
+    const color = day.nightHikingRequired ? '#ef4444' : '#22c55e';
+
+    // Start marker with day number
+    const startMarker = createNumberedMarker(
+      day.startLocation.lat,
+      day.startLocation.lon,
+      dayNum,
+      color
+    );
+    startMarker.bindPopup(`
+      <strong>Day ${dayNum} Start</strong><br>
+      ${day.date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}<br>
+      Sunrise: ${formatTime(day.sunrise)}<br>
+      Daylight: ${formatDaylightHours(day.daylightHours)}
+      ${day.nightHikingRequired ? '<br><em style="color: #ef4444;">Night hiking required</em>' : ''}
+    `);
+    startMarker.addTo(map!);
+  });
+
+  // Add final end marker
+  const lastDay = plan.days[plan.days.length - 1];
+  if (lastDay) {
+    const endMarker = L.circleMarker(
+      [lastDay.endLocation.lat, lastDay.endLocation.lon],
+      {
+        radius: 10,
+        fillColor: '#3b82f6',
+        color: '#fff',
+        weight: 2,
+        fillOpacity: 0.9,
+      }
+    );
+    endMarker.bindPopup('<strong>Trip End</strong>');
+    endMarker.addTo(map);
+  }
+
+  // Fit map to show all points
+  fitMapToBounds(map, points);
+}
+
+// Render daylight hours chart
+function renderDaylightChart(plan: DaylightPlan): void {
+  // Destroy existing chart
+  if (daylightChart) {
+    daylightChart.destroy();
+  }
+
+  const canvas = document.getElementById('daylight-chart') as HTMLCanvasElement;
+  if (!canvas) return;
+
+  const labels = plan.days.map((_, i) => `Day ${i + 1}`);
+  const daylightData = plan.days.map(d => d.daylightHours);
+  const hikingData = plan.days.map(d => d.hikingHoursAvailable);
+  const nightHikingColors = plan.days.map(d =>
+    d.nightHikingRequired ? 'rgba(239, 68, 68, 0.7)' : 'rgba(34, 197, 94, 0.7)'
+  );
+
+  daylightChart = new Chart(canvas, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: 'Daylight Hours',
+          data: daylightData,
+          backgroundColor: 'rgba(251, 191, 36, 0.7)',
+          borderColor: '#f59e0b',
+          borderWidth: 1,
+        },
+        {
+          label: 'Hiking Hours Available',
+          data: hikingData,
+          backgroundColor: nightHikingColors,
+          borderColor: plan.days.map(d =>
+            d.nightHikingRequired ? '#ef4444' : '#22c55e'
+          ),
+          borderWidth: 1,
+        },
+      ],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      scales: {
+        y: {
+          beginAtZero: true,
+          title: {
+            display: true,
+            text: 'Hours',
+          },
+          ticks: {
+            stepSize: 2,
+          },
+        },
+      },
+      plugins: {
+        tooltip: {
+          callbacks: {
+            label: (context) => {
+              const hours = context.parsed.y ?? 0;
+              const h = Math.floor(hours);
+              const m = Math.round((hours - h) * 60);
+              return `${context.dataset.label}: ${h}h ${m}m`;
+            },
+          },
+        },
+        legend: {
+          position: 'bottom',
+        },
+      },
+    },
+  });
+}
