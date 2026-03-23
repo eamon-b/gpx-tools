@@ -34,6 +34,8 @@ All processing logic lives here as reusable modules exported via `index.ts`:
 - `poi-enrichment.ts` - OpenStreetMap POI queries
 - `route-comparison.ts` - Compare two routes
 - `daylight.ts` - Sunrise/sunset via suncalc
+- `gpx-datasheet.ts` - Generate datasheets with waypoint visits, resupply points, distances
+- `api-client.ts` - Client-side wrapper for POI/elevation API calls
 
 ### Web Tools (`src/web/tools/`)
 
@@ -48,6 +50,8 @@ Each tool is a self-contained HTML + TypeScript pair. Tools process files client
 
 API features: CORS (configured via `ALLOWED_ORIGINS` env), rate limiting (default 10 req/min), Vercel KV caching.
 
+**Note:** Root `api/` contains thin re-export stubs (e.g. `export { default } from '../src/api/overpass'`) required by Vercel's function discovery. Actual logic lives in `src/api/`.
+
 ### Path Alias
 
 `@lib` maps to `src/lib/` (configured in vite.config.ts and tsconfig.json).
@@ -57,6 +61,14 @@ API features: CORS (configured via `ALLOWED_ORIGINS` env), rate limiting (defaul
 - **Library-first**: Core logic in `src/lib/`, web and API consume it
 - **Type-driven**: Shared interfaces in `types.ts`
 - **Client-side processing**: Files processed in browser, only API calls for external data
+
+## Environment
+
+Required for `vercel dev` (serverless functions):
+- `ALLOWED_ORIGINS` - Comma-separated allowed CORS origins
+- Vercel KV env vars (`KV_REST_API_URL`, `KV_REST_API_TOKEN`) - for caching in `overpass.ts`
+
+These are not needed for `npm run dev` (static site only).
 
 ## Testing
 
