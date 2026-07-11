@@ -1,7 +1,13 @@
-import { kv } from '@vercel/kv';
 import { createHash } from 'crypto';
 import { getCorsHeaders } from './_cors';
 import { logError } from './_logger';
+import { createRedisClient } from './_redis';
+
+// Cache entries are raw JSON strings that we hand straight back as the response
+// body, so disable automatic (de)serialization to keep them byte-for-byte on
+// read. (@upstash/redis stores strings verbatim but JSON.parses them on read by
+// default, which would turn the cached payload back into an object.)
+const redis = createRedisClient({ automaticDeserialization: false });
 
 interface OverpassRequest {
   bounds: {
@@ -90,16 +96,16 @@ async function checkRateLimit(ip: string): Promise<RateLimitResult> {
 
   // Use atomic increment to avoid race conditions
   // INCR creates the key with value 1 if it doesn't exist
-  const count = await kv.incr(key);
+  const count = await redis.incr(key);
 
   // Set expiry only on first request (when count is 1)
   // This is still a race but harmless - worst case we reset the window slightly
   if (count === 1) {
-    await kv.expire(key, 60);
+    await redis.expire(key, 60);
   }
 
   if (count > RATE_LIMIT) {
-    const ttl = await kv.ttl(key);
+    const ttl = await redis.ttl(key);
     return { allowed: false, remaining: 0, resetIn: ttl > 0 ? ttl : 60 };
   }
 
@@ -168,7 +174,7 @@ export default async function handler(req: Request): Promise<Response> {
 
     // Check cache
     const cacheKey = `overpass:${hashRequest(body)}`;
-    const cached = await kv.get<string>(cacheKey);
+    const cached = await redis.get<string>(cacheKey);
 
     if (cached) {
       return new Response(cached, {
@@ -205,7 +211,7 @@ export default async function handler(req: Request): Promise<Response> {
     const data = await overpassResponse.text();
 
     // Cache response
-    await kv.set(cacheKey, data, { ex: CACHE_TTL });
+    await redis.set(cacheKey, data, { ex: CACHE_TTL });
 
     return new Response(data, {
       headers: {

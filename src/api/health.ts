@@ -1,7 +1,9 @@
-import { kv } from '@vercel/kv';
 import { getCorsHeaders } from './_cors';
+import { createRedisClient } from './_redis';
 
 const HEALTH_CHECK_KEY = 'health:check';
+
+const redis = createRedisClient();
 
 export default async function handler(req: Request): Promise<Response> {
   const corsHeaders = getCorsHeaders(req);
@@ -16,8 +18,8 @@ export default async function handler(req: Request): Promise<Response> {
   // Check KV connection with actual read/write test
   try {
     const testValue = `health-${Date.now()}`;
-    await kv.set(HEALTH_CHECK_KEY, testValue, { ex: 60 });
-    const retrieved = await kv.get<string>(HEALTH_CHECK_KEY);
+    await redis.set(HEALTH_CHECK_KEY, testValue, { ex: 60 });
+    const retrieved = await redis.get<string>(HEALTH_CHECK_KEY);
     checks.kv = retrieved === testValue;
     if (!checks.kv) {
       details.kv = 'Read/write mismatch';

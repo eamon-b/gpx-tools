@@ -35,7 +35,7 @@ let enrichedPOIs: EnrichedPOI[] = [];
 let routeName = 'route';
 let routePoints: MapPoint[] = [];
 let map: L.Map | null = null;
-let poiMarkers: Map<string, L.CircleMarker[]> = new Map();
+const poiMarkers: Map<string, L.CircleMarker[]> = new Map();
 
 // Utility functions
 function formatFileSize(bytes: number): string {
