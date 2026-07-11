@@ -48,7 +48,7 @@ Each tool is a self-contained HTML + TypeScript pair. Tools process files client
 - `health.ts` - Service health check
 - `_cors.ts`, `_logger.ts` - Shared utilities
 
-API features: CORS (configured via `ALLOWED_ORIGINS` env), rate limiting (default 10 req/min), Vercel KV caching.
+API features: CORS (configured via `ALLOWED_ORIGINS` env), rate limiting (default 10 req/min), Redis caching via `@upstash/redis` (shared client in `_redis.ts`).
 
 **Note:** Root `api/` contains thin re-export stubs (e.g. `export { default } from '../src/api/overpass'`) required by Vercel's function discovery. Actual logic lives in `src/api/`.
 
@@ -66,7 +66,7 @@ API features: CORS (configured via `ALLOWED_ORIGINS` env), rate limiting (defaul
 
 Required for `vercel dev` (serverless functions):
 - `ALLOWED_ORIGINS` - Comma-separated allowed CORS origins
-- Vercel KV env vars (`KV_REST_API_URL`, `KV_REST_API_TOKEN`) - for caching in `overpass.ts`
+- Redis (Upstash) env vars - `KV_REST_API_URL` / `KV_REST_API_TOKEN` (from Vercel's Redis integration) or `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` - for caching in `overpass.ts`, `elevation.ts`, and `health.ts`
 
 These are not needed for `npm run dev` (static site only).
 

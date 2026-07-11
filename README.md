@@ -120,7 +120,7 @@ The application includes serverless API endpoints for POI and elevation data:
 
 Features:
 - Rate limiting (configurable, default: 10 requests/minute)
-- Response caching via Vercel KV
+- Response caching via Redis (Upstash)
 - Circuit breaker for external API failures
 - Automatic retry with exponential backoff (client-side)
 
@@ -144,7 +144,7 @@ vercel --prod
 #### Setup Steps
 
 1. **Create project**: Run `vercel` and follow prompts
-2. **Set up Vercel KV**: Dashboard → Storage → Create → KV → Connect to project
+2. **Set up Redis**: Dashboard → Storage → Create → Upstash for Redis → Connect to project (this provisions `KV_REST_API_URL` / `KV_REST_API_TOKEN`; native Upstash `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` are also accepted)
 3. **Add environment variables**:
    ```bash
    vercel env add ALLOWED_ORIGINS          # Required: comma-separated allowed origins

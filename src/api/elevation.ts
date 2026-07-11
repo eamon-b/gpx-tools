@@ -1,6 +1,10 @@
-import { kv } from '@vercel/kv';
 import { getCorsHeaders } from './_cors';
 import { logError, logWarn } from './_logger';
+import { createRedisClient } from './_redis';
+
+// Values here are structured (circuit-breaker objects, numeric elevations), so
+// keep @upstash/redis's default JSON (de)serialization.
+const redis = createRedisClient();
 
 interface ElevationRequest {
   locations: { lat: number; lon: number }[];
@@ -28,13 +32,13 @@ interface CircuitState {
 }
 
 async function getCircuitState(): Promise<CircuitState> {
-  const state = await kv.get<CircuitState>(CIRCUIT_BREAKER_KEY);
+  const state = await redis.get<CircuitState>(CIRCUIT_BREAKER_KEY);
   return state || { failures: 0, lastFailure: 0, isOpen: false };
 }
 
 async function recordSuccess(): Promise<void> {
   // Reset circuit on success
-  await kv.del(CIRCUIT_BREAKER_KEY);
+  await redis.del(CIRCUIT_BREAKER_KEY);
 }
 
 async function recordFailure(): Promise<boolean> {
@@ -51,7 +55,7 @@ async function recordFailure(): Promise<boolean> {
   state.lastFailure = now;
   state.isOpen = state.failures >= CIRCUIT_FAILURE_THRESHOLD;
 
-  await kv.set(CIRCUIT_BREAKER_KEY, state, { ex: CIRCUIT_RESET_TIMEOUT * 2 });
+  await redis.set(CIRCUIT_BREAKER_KEY, state, { ex: CIRCUIT_RESET_TIMEOUT * 2 });
 
   return state.isOpen;
 }
@@ -88,12 +92,12 @@ function elevationCacheKey(lat: number, lon: number): string {
 
 async function getCachedElevation(lat: number, lon: number): Promise<number | null> {
   const key = elevationCacheKey(lat, lon);
-  return kv.get<number>(key);
+  return redis.get<number>(key);
 }
 
 async function setCachedElevation(lat: number, lon: number, elevation: number): Promise<void> {
   const key = elevationCacheKey(lat, lon);
-  await kv.set(key, elevation, { ex: CACHE_TTL });
+  await redis.set(key, elevation, { ex: CACHE_TTL });
 }
 
 const FETCH_TIMEOUT_MS = 15000; // 15 second timeout for external API
