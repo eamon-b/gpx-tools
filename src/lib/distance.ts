@@ -78,20 +78,18 @@ export function haversineDistance3D(
 }
 
 /**
- * Calculate distance between a waypoint and a track point
+ * Calculate distance between a waypoint and a track point.
+ *
+ * Measured in 2D (horizontal distance only): waypoints often lack elevation
+ * data (parsed as ele=0), and 3D distance would prevent them from ever
+ * matching a track at elevation (e.g. every proximity check against a track
+ * at 2000m would report >= 2km).
  */
 export function waypointToPointDistance(
   waypoint: GpxWaypoint,
   point: GpxPoint
 ): number {
-  return haversineDistance3D(
-    waypoint.lat,
-    waypoint.lon,
-    waypoint.ele,
-    point.lat,
-    point.lon,
-    point.ele
-  );
+  return haversineDistance2D(waypoint.lat, waypoint.lon, point.lat, point.lon);
 }
 
 /**

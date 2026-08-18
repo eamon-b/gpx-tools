@@ -1,6 +1,7 @@
 import { optimizeGpx, type OptimizationResult, type OptimizationOptions } from '../../lib/index.js';
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
+import { escapeHtml } from '../shared/html-utils.js';
 
 // DOM Elements
 const gpxUploadArea = document.getElementById('gpx-upload-area')!;
@@ -36,15 +37,6 @@ let fileEntries: FileEntry[] = [];
 let optimizationResults: OptimizationResult[] = [];
 
 // Utility functions
-function escapeHtml(str: string): string {
-  return str
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
-
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;

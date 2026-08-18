@@ -167,8 +167,12 @@ calculateBtn.addEventListener('click', async () => {
 
     const dailyTargetKm = parseFloat(dailyTargetInput.value) || 25;
     const hikingSpeedKmh = parseFloat(hikingSpeedInput.value) || 4;
-    const startTimeOffset = parseInt(startOffsetInput.value) || 30;
-    const endTimeOffset = parseInt(endOffsetInput.value) || 30;
+    // Not `parseInt(...) || 30`: 0 is a valid offset (start right at sunrise
+    // / end right at sunset) and must not fall back to the default
+    const parsedStartOffset = parseInt(startOffsetInput.value, 10);
+    const parsedEndOffset = parseInt(endOffsetInput.value, 10);
+    const startTimeOffset = Number.isNaN(parsedStartOffset) ? 30 : parsedStartOffset;
+    const endTimeOffset = Number.isNaN(parsedEndOffset) ? 30 : parsedEndOffset;
 
     daylightPlan = createDaylightPlan(points, {
       startDate,
@@ -430,7 +434,12 @@ function loadPreferences(): void {
 }
 
 function savePreferences(): void {
-  const existingPrefs = JSON.parse(localStorage.getItem('gpx-tools-prefs') || '{}');
+  let existingPrefs: Record<string, unknown> = {};
+  try {
+    existingPrefs = JSON.parse(localStorage.getItem('gpx-tools-prefs') || '{}');
+  } catch {
+    // Corrupted stored prefs - overwrite with fresh values
+  }
   existingPrefs.daylight = {
     dailyTarget: dailyTargetInput.value,
     hikingSpeed: hikingSpeedInput.value,

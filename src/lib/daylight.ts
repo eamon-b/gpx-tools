@@ -277,7 +277,16 @@ export function createDaylightPlan(
   // Estimate the route's UTC offset from its mean longitude so that
   // calendar days and clock times are computed in the route's local time,
   // not the browser's (which may be a different time zone entirely).
-  const meanLon = routePoints.reduce((sum, p) => sum + p.lon, 0) / routePoints.length;
+  // Use a circular mean so routes crossing the antimeridian (e.g. points at
+  // lon +179.9 and -179.9) resolve to UTC±12 instead of averaging to ~UTC+0.
+  let sumSin = 0;
+  let sumCos = 0;
+  for (const p of routePoints) {
+    const rad = p.lon * Math.PI / 180;
+    sumSin += Math.sin(rad);
+    sumCos += Math.cos(rad);
+  }
+  const meanLon = Math.atan2(sumSin, sumCos) * 180 / Math.PI;
   const utcOffsetHours = estimateUtcOffset(meanLon);
 
   // Anchor each day at route-local noon. A 'YYYY-MM-DD' start date string is
@@ -475,8 +484,8 @@ export function exportDaylightPlanToCSV(plan: DaylightPlan): string {
     day.endLocation.lat.toFixed(6),
     day.endLocation.lon.toFixed(6),
     day.distanceKm.toFixed(1),
-    day.polarDay ? 'no sunset' : day.polarNight ? 'no sunrise' : formatTime(day.sunrise, offset),
-    day.polarDay ? 'no sunset' : day.polarNight ? 'no sunrise' : formatTime(day.sunset, offset),
+    day.polarDay ? 'sun up all day' : day.polarNight ? 'no sunrise' : formatTime(day.sunrise, offset),
+    day.polarDay ? 'no sunset' : day.polarNight ? 'sun down all day' : formatTime(day.sunset, offset),
     formatDaylightHours(day.daylightHours),
     formatDaylightHours(day.hikingHoursAvailable),
     day.nightHikingRequired ? 'Yes' : 'No',

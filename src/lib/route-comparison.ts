@@ -195,6 +195,9 @@ export function compareRoutes(
     if (closest.distance > threshold && consecutiveMisses >= FULL_SCAN_AFTER_MISSES) {
       // Repeated misses: the routes may have reconverged outside the window.
       closest = findClosestPoint(r1[i], r2, 0, r2.length);
+      // Reset even if the full scan missed, so long divergent stretches pay
+      // for one full scan per FULL_SCAN_AFTER_MISSES points, not per point.
+      consecutiveMisses = 0;
     }
 
     if (closest.distance <= threshold) {

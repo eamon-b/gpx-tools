@@ -523,7 +523,12 @@ function loadPreferences(): void {
 }
 
 function savePreferences(): void {
-  const existingPrefs = JSON.parse(localStorage.getItem('gpx-tools-prefs') || '{}');
+  let existingPrefs: Record<string, unknown> = {};
+  try {
+    existingPrefs = JSON.parse(localStorage.getItem('gpx-tools-prefs') || '{}');
+  } catch {
+    // Corrupted stored prefs - overwrite with fresh values
+  }
   existingPrefs.compare = {
     proximityThreshold: proximityInput.value,
     minSegment: minSegmentInput.value,

@@ -60,7 +60,7 @@ export function parseGpx(xml: string): GpxData {
 /**
  * Escape XML special characters
  */
-function escapeXml(str: string): string {
+export function escapeXml(str: string): string {
   return str
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
