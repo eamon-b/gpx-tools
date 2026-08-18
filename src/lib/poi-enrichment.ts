@@ -101,31 +101,50 @@ function downsampleRouteIndices(cumulative: number[], spacingKm: number): number
 function findMinDistanceToRoute(
   poi: POI,
   routePoints: { lat: number; lon: number }[],
-  coarseIndices: number[]
+  coarseIndices: number[],
+  cumulative: number[]
 ): { distance: number; nearestPointIndex: number } {
+  if (coarseIndices.length === 0) {
+    return { distance: Infinity, nearestPointIndex: 0 };
+  }
+
   // Coarse pass over the downsampled route
-  let minCoarseDistance = Infinity;
-  let bestCoarse = 0; // position within coarseIndices
+  const coarseDistances = new Array<number>(coarseIndices.length);
+  let minDistance = Infinity;
+  let nearestIndex = coarseIndices[0];
   for (let k = 0; k < coarseIndices.length; k++) {
     const i = coarseIndices[k];
     // haversineDistance returns meters, convert to km
     const dist = haversineDistance(poi.lat, poi.lon, routePoints[i].lat, routePoints[i].lon) / 1000;
-    if (dist < minCoarseDistance) {
-      minCoarseDistance = dist;
-      bestCoarse = k;
-    }
-  }
-
-  // Refine at full resolution between the neighboring coarse samples
-  const start = coarseIndices[Math.max(0, bestCoarse - 1)];
-  const end = coarseIndices[Math.min(coarseIndices.length - 1, bestCoarse + 1)];
-  let minDistance = Infinity;
-  let nearestIndex = coarseIndices[bestCoarse];
-  for (let i = start; i <= end; i++) {
-    const dist = haversineDistance(poi.lat, poi.lon, routePoints[i].lat, routePoints[i].lon) / 1000;
+    coarseDistances[k] = dist;
     if (dist < minDistance) {
       minDistance = dist;
       nearestIndex = i;
+    }
+  }
+
+  // Refine at full resolution inside every coarse segment that could contain
+  // a closer point — not just around the single best coarse sample, which on
+  // switchbacks/out-and-backs can belong to a different pass of the route
+  // than the true nearest point. For a point p between coarse samples k and
+  // k+1, the triangle inequality gives dist(p) >= (d_k + d_k+1 - segLen) / 2
+  // (straight-line distance shrinks by at most the along-route distance
+  // walked from either endpoint), so segments failing that bound are pruned.
+  // This keeps the result exact for any sample spacing.
+  for (let k = 0; k + 1 < coarseIndices.length; k++) {
+    const startIdx = coarseIndices[k];
+    const endIdx = coarseIndices[k + 1];
+    const segLen = cumulative[endIdx] - cumulative[startIdx];
+    const lowerBound = (coarseDistances[k] + coarseDistances[k + 1] - segLen) / 2;
+    if (lowerBound >= minDistance) {
+      continue;
+    }
+    for (let i = startIdx + 1; i < endIdx; i++) {
+      const dist = haversineDistance(poi.lat, poi.lon, routePoints[i].lat, routePoints[i].lon) / 1000;
+      if (dist < minDistance) {
+        minDistance = dist;
+        nearestIndex = i;
+      }
     }
   }
 
@@ -311,13 +330,13 @@ export async function enrichRoute(
 
   // Precompute cumulative distances along the route (also used to report
   // "km along route") and a downsampled index set (~150m spacing) for fast
-  // proximity checks. The spacing is well under typical max-distance
-  // tolerances, so filtering accuracy is preserved.
+  // proximity checks. findMinDistanceToRoute refines the coarse result at
+  // full resolution, so the returned distances/indices stay exact.
   const cumulativeDistances = computeCumulativeDistances(routePoints);
   const coarseIndices = downsampleRouteIndices(cumulativeDistances, 0.15);
 
   for (const poi of uniquePOIs.values()) {
-    const { distance, nearestPointIndex } = findMinDistanceToRoute(poi, routePoints, coarseIndices);
+    const { distance, nearestPointIndex } = findMinDistanceToRoute(poi, routePoints, coarseIndices, cumulativeDistances);
 
     // Filter by max distance from route
     if (distance > maxDistance) {

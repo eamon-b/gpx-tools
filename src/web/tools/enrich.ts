@@ -3,6 +3,7 @@ import { enrichRoute, exportPOIsToCSV, exportPOIsToGPX, getPOIName, getPOIDescri
 import { saveAs } from 'file-saver';
 import L from 'leaflet';
 import { initializeMap, fitMapToBounds, createRoutePolyline, createCircleMarker, type MapPoint } from '../shared/map-utils.js';
+import { escapeHtml } from '../shared/html-utils.js';
 
 // DOM Elements
 const gpxUploadArea = document.getElementById('gpx-upload-area')!;
@@ -46,15 +47,6 @@ function formatFileSize(bytes: number): string {
 }
 
 // Escape OSM-derived (or any untrusted) strings before inserting into HTML
-function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
-
 // Inline error display (replaces alert())
 function showError(message: string): void {
   errorArea.textContent = message;
@@ -443,7 +435,12 @@ function loadPreferences(): void {
 }
 
 function savePreferences(): void {
-  const existingPrefs = JSON.parse(localStorage.getItem('gpx-tools-prefs') || '{}');
+  let existingPrefs: Record<string, unknown> = {};
+  try {
+    existingPrefs = JSON.parse(localStorage.getItem('gpx-tools-prefs') || '{}');
+  } catch {
+    // Corrupted stored prefs - overwrite with fresh values
+  }
   existingPrefs.enrich = {
     water: poiWaterCheckbox.checked,
     camping: poiCampingCheckbox.checked,

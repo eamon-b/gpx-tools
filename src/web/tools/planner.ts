@@ -1,6 +1,7 @@
 import { processTravelPlan, processGpxTravelPlan, type ProcessResult, type DistanceUnit, type ElevationUnit, type CsvDelimiter } from '../../lib/index.js';
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
+import { escapeHtml } from '../shared/html-utils.js';
 
 // DOM Elements
 const csvUploadArea = document.getElementById('csv-upload-area')!;
@@ -26,15 +27,6 @@ let csvFile: File | null = null;
 let csvProcessResults: ProcessResult | null = null;
 
 // Utility functions
-function escapeHtml(str: string): string {
-  return str
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
-
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;

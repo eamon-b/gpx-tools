@@ -8,8 +8,8 @@ import type {
   OptimizationResult,
   OptimizationStats
 } from './types';
-import { parseGpx } from './gpx-parser';
-import { haversineDistance3D } from './distance';
+import { parseGpx, escapeXml } from './gpx-parser';
+import { haversineDistance2D, haversineDistance3D } from './distance';
 
 // Constants
 const EARTH_RADIUS_METERS = 6371000;
@@ -436,6 +436,10 @@ export function truncateTracks(
   // Find start index (same semantics as truncateTrack, but file-wide)
   if (truncateStartMeters > 0) {
     let accumulatedDistance = 0;
+    // If the requested trim exceeds the available distance, trim everything
+    // rather than silently keeping the full track (the minimum-2-points
+    // guard below restores the final two points)
+    startIndex = flat.length - 1;
     for (let i = 1; i < flat.length; i++) {
       accumulatedDistance += edgeDistance(i);
       if (accumulatedDistance >= truncateStartMeters) {
@@ -450,6 +454,9 @@ export function truncateTracks(
   // flat[i - 1] to the original end, so flat[i - 1] is the last kept point.
   if (truncateEndMeters > 0) {
     let accumulatedDistance = 0;
+    // If the requested trim exceeds the remaining distance, trim everything
+    // after startIndex (the minimum-2-points guard below restores 2 points)
+    endIndex = startIndex;
     for (let i = flat.length - 1; i > startIndex; i--) {
       accumulatedDistance += edgeDistance(i);
       if (accumulatedDistance >= truncateEndMeters) {
@@ -499,18 +506,6 @@ export function roundCoordinates(points: GpxPoint[], precision: number): GpxPoin
     lon: Math.round(p.lon * factor) / factor,
     ele: Math.round(p.ele * 10) / 10 // 1 decimal for elevation
   }));
-}
-
-/**
- * Escape XML special characters
- */
-function escapeXml(str: string): string {
-  return str
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&apos;');
 }
 
 /**
@@ -700,8 +695,30 @@ export function optimizeGpx(
 
   // Truncate start/end for privacy at the file level (not per segment),
   // so multi-segment files only lose distance at the file's start and end
+  let waypoints = gpxData.waypoints;
   if (opts.truncateStart > 0 || opts.truncateEnd > 0) {
+    const pointsBeforeTruncation = allTracks.flatMap(t => t.segments.flatMap(s => s.points));
     allTracks = truncateTracks(allTracks, opts.truncateStart, opts.truncateEnd);
+
+    // Also drop waypoints belonging to the truncated region: a waypoint whose
+    // nearest track point was trimmed away (e.g. "Home" at the track start)
+    // marks the very location the truncation is meant to hide, so preserving
+    // it verbatim would defeat the privacy feature. Waypoints closest to a
+    // kept track point (resupply towns, mid-route POIs) are preserved.
+    // truncateTracks reuses the original point objects, so identity works here.
+    const keptPoints = new Set(allTracks.flatMap(t => t.segments.flatMap(s => s.points)));
+    waypoints = waypoints.filter(wpt => {
+      let minDist = Infinity;
+      let nearestIsKept = true;
+      for (const pt of pointsBeforeTruncation) {
+        const d = haversineDistance2D(wpt.lat, wpt.lon, pt.lat, pt.lon);
+        if (d < minDist) {
+          minDist = d;
+          nearestIsKept = keptPoints.has(pt);
+        }
+      }
+      return nearestIsKept;
+    });
   }
 
   // Process each track
@@ -711,7 +728,8 @@ export function optimizeGpx(
   }));
 
   // Generate optimized GPX, preserving waypoints from the input file
-  const optimizedContent = generateOptimizedGpx(optimizedTracks, opts, gpxData.waypoints);
+  // (minus any dropped by privacy truncation above)
+  const optimizedContent = generateOptimizedGpx(optimizedTracks, opts, waypoints);
 
   // Get optimized stats
   const optimizedPoints: GpxPoint[] = [];
