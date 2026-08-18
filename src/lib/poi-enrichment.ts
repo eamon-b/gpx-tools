@@ -19,39 +19,110 @@ export interface EnrichmentOptions {
 export interface EnrichedPOI extends POI {
   distanceFromRoute: number;
   nearestPointIndex: number;
+  /** Cumulative distance along the route (km) at the nearest route point */
+  distanceAlongRoute: number;
   category: POIType;
+}
+
+export interface ChunkFailure {
+  chunkIndex: number;
+  error: string;
 }
 
 export interface EnrichmentResult {
   pois: EnrichedPOI[];
   byType: Record<POIType, EnrichedPOI[]>;
+  /** Chunks that failed to fetch (after retries). Empty when everything succeeded. */
+  failedChunks: ChunkFailure[];
   stats: {
     totalFound: number;
     byType: Record<POIType, number>;
     queryChunks: number;
+    failedChunks: number;
     queryTimeMs: number;
   };
 }
 
 /**
- * Find the minimum distance from a POI to any point on the route
- * Returns distance in km
+ * Compute the cumulative distance (in km) along the route at each point.
+ * cumulative[0] is 0; cumulative[i] is the route distance from the start to point i.
  */
-function findMinDistanceToRoute(
-  poi: POI,
+export function computeCumulativeDistances(
   routePoints: { lat: number; lon: number }[]
-): { distance: number; nearestPointIndex: number } {
-  let minDistance = Infinity;
-  let nearestIndex = 0;
-
-  for (let i = 0; i < routePoints.length; i++) {
+): number[] {
+  if (routePoints.length === 0) {
+    return [];
+  }
+  const cumulative = new Array<number>(routePoints.length);
+  let total = 0;
+  cumulative[0] = 0;
+  for (let i = 1; i < routePoints.length; i++) {
     // haversineDistance returns meters, convert to km
-    const dist = haversineDistance(
-      poi.lat,
-      poi.lon,
+    total += haversineDistance(
+      routePoints[i - 1].lat,
+      routePoints[i - 1].lon,
       routePoints[i].lat,
       routePoints[i].lon
     ) / 1000;
+    cumulative[i] = total;
+  }
+  return cumulative;
+}
+
+/**
+ * Select a subset of route point indices spaced roughly `spacingKm` apart
+ * (always including the first and last point), using precomputed cumulative
+ * distances. Used to speed up POI-proximity checks on dense tracks.
+ */
+function downsampleRouteIndices(cumulative: number[], spacingKm: number): number[] {
+  if (cumulative.length === 0) {
+    return [];
+  }
+  const indices: number[] = [0];
+  let lastKept = 0;
+  for (let i = 1; i < cumulative.length; i++) {
+    if (cumulative[i] - cumulative[lastKept] >= spacingKm) {
+      indices.push(i);
+      lastKept = i;
+    }
+  }
+  if (indices[indices.length - 1] !== cumulative.length - 1 && cumulative.length > 1) {
+    indices.push(cumulative.length - 1);
+  }
+  return indices;
+}
+
+/**
+ * Find the minimum distance from a POI to any point on the route.
+ * Uses a coarse pass over downsampled route indices, then refines locally
+ * around the coarse match so the returned nearestPointIndex refers to the
+ * full-resolution route. Returns distance in km.
+ */
+function findMinDistanceToRoute(
+  poi: POI,
+  routePoints: { lat: number; lon: number }[],
+  coarseIndices: number[]
+): { distance: number; nearestPointIndex: number } {
+  // Coarse pass over the downsampled route
+  let minCoarseDistance = Infinity;
+  let bestCoarse = 0; // position within coarseIndices
+  for (let k = 0; k < coarseIndices.length; k++) {
+    const i = coarseIndices[k];
+    // haversineDistance returns meters, convert to km
+    const dist = haversineDistance(poi.lat, poi.lon, routePoints[i].lat, routePoints[i].lon) / 1000;
+    if (dist < minCoarseDistance) {
+      minCoarseDistance = dist;
+      bestCoarse = k;
+    }
+  }
+
+  // Refine at full resolution between the neighboring coarse samples
+  const start = coarseIndices[Math.max(0, bestCoarse - 1)];
+  const end = coarseIndices[Math.min(coarseIndices.length - 1, bestCoarse + 1)];
+  let minDistance = Infinity;
+  let nearestIndex = coarseIndices[bestCoarse];
+  for (let i = start; i <= end; i++) {
+    const dist = haversineDistance(poi.lat, poi.lon, routePoints[i].lat, routePoints[i].lon) / 1000;
     if (dist < minDistance) {
       minDistance = dist;
       nearestIndex = i;
@@ -190,16 +261,32 @@ export async function enrichRoute(
 
   onProgress?.(`Fetching POIs (${chunks.length} chunks)...`);
 
-  // Fetch POIs from all chunks
+  // Fetch POIs from all chunks. A failed chunk (after api-client retries)
+  // is recorded and skipped so previously fetched chunks are not lost.
   const allPOIs: POI[] = [];
+  const failedChunks: ChunkFailure[] = [];
   for (let i = 0; i < chunks.length; i++) {
     onProgress?.(`Fetching chunk ${i + 1}/${chunks.length}...`);
     const request: POIRequest = {
       bounds: chunks[i],
       types: options.types,
     };
-    const chunkPOIs = await apiClient.fetchPOIs(request);
-    allPOIs.push(...chunkPOIs);
+    try {
+      const chunkPOIs = await apiClient.fetchPOIs(request);
+      allPOIs.push(...chunkPOIs);
+    } catch (error) {
+      failedChunks.push({
+        chunkIndex: i,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      onProgress?.(`Chunk ${i + 1}/${chunks.length} failed, continuing...`);
+    }
+  }
+
+  if (failedChunks.length === chunks.length) {
+    throw new Error(
+      `Failed to fetch POIs for all ${chunks.length} area${chunks.length === 1 ? '' : 's'}: ${failedChunks[0].error}`
+    );
   }
 
   onProgress?.(`Processing ${allPOIs.length} POIs...`);
@@ -222,8 +309,15 @@ export async function enrichRoute(
     emergency: [],
   };
 
+  // Precompute cumulative distances along the route (also used to report
+  // "km along route") and a downsampled index set (~150m spacing) for fast
+  // proximity checks. The spacing is well under typical max-distance
+  // tolerances, so filtering accuracy is preserved.
+  const cumulativeDistances = computeCumulativeDistances(routePoints);
+  const coarseIndices = downsampleRouteIndices(cumulativeDistances, 0.15);
+
   for (const poi of uniquePOIs.values()) {
-    const { distance, nearestPointIndex } = findMinDistanceToRoute(poi, routePoints);
+    const { distance, nearestPointIndex } = findMinDistanceToRoute(poi, routePoints, coarseIndices);
 
     // Filter by max distance from route
     if (distance > maxDistance) {
@@ -239,6 +333,7 @@ export async function enrichRoute(
       ...poi,
       distanceFromRoute: distance,
       nearestPointIndex,
+      distanceAlongRoute: cumulativeDistances[nearestPointIndex],
       category,
     };
 
@@ -256,6 +351,7 @@ export async function enrichRoute(
     totalFound: enrichedPOIs.length,
     byType: {} as Record<POIType, number>,
     queryChunks: chunks.length,
+    failedChunks: failedChunks.length,
     queryTimeMs: Date.now() - startTime,
   };
 
@@ -268,25 +364,41 @@ export async function enrichRoute(
   return {
     pois: enrichedPOIs,
     byType,
+    failedChunks,
     stats,
   };
+}
+
+/**
+ * Escape a single CSV field: wrap in double quotes when it contains a comma,
+ * quote, or newline, and double any embedded quotes.
+ */
+function escapeCSVField(field: string): string {
+  if (/[",\r\n]/.test(field)) {
+    return `"${field.replace(/"/g, '""')}"`;
+  }
+  return field;
 }
 
 /**
  * Format POIs as CSV for export
  */
 export function exportPOIsToCSV(pois: EnrichedPOI[]): string {
-  const headers = ['Name', 'Category', 'Latitude', 'Longitude', 'Distance from Route (km)', 'Description'];
+  const headers = ['Name', 'Category', 'Latitude', 'Longitude', 'Distance Along Route (km)', 'Distance from Route (km)', 'Description'];
   const rows = pois.map(poi => [
     getPOIName(poi),
     poi.category,
     poi.lat.toFixed(6),
     poi.lon.toFixed(6),
+    poi.distanceAlongRoute.toFixed(1),
     poi.distanceFromRoute.toFixed(2),
-    getPOIDescription(poi).replace(/,/g, ';'),
+    getPOIDescription(poi),
   ]);
 
-  return [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+  return [
+    headers.map(escapeCSVField).join(','),
+    ...rows.map(r => r.map(escapeCSVField).join(',')),
+  ].join('\n');
 }
 
 /**

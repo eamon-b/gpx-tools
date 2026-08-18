@@ -1,5 +1,5 @@
 import { parseGpx } from '../../lib/gpx-parser.js';
-import { compareRoutes, exportComparisonToCSV, type RoutePoint, type RouteComparison } from '../../lib/route-comparison.js';
+import { compareRoutes, exportComparisonToCSV, type RoutePoint, type RouteComparison, type RouteSegment } from '../../lib/route-comparison.js';
 import { saveAs } from 'file-saver';
 import L from 'leaflet';
 import { Chart, registerables } from 'chart.js';
@@ -44,8 +44,18 @@ let route1Points: RoutePoint[] = [];
 let route2Points: RoutePoint[] = [];
 let map: L.Map | null = null;
 let elevationChart: Chart | null = null;
+let currentSegments: RouteSegment[] = [];
+let highlightLine: L.Polyline | null = null;
 
 // Utility functions
+// Parse a numeric input, falling back to a default when empty/NaN and
+// clamping to a sane positive range
+function readNumericInput(input: HTMLInputElement, fallback: number, min: number, max: number): number {
+  const value = parseFloat(input.value);
+  if (!Number.isFinite(value)) return fallback;
+  return Math.min(max, Math.max(min, value));
+}
+
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -187,8 +197,10 @@ compareBtn.addEventListener('click', async () => {
     const points1 = route1Points;
     const points2 = route2Points;
 
-    const proximityThreshold = parseFloat(proximityInput.value) / 1000; // Convert m to km
-    const minSegmentLength = parseFloat(minSegmentInput.value) / 1000; // Convert m to km
+    // Read numeric options, falling back to defaults on empty/invalid input
+    // and clamping to the same range as the HTML input attributes
+    const proximityThreshold = readNumericInput(proximityInput, 100, 10, 1000) / 1000; // Convert m to km
+    const minSegmentLength = readNumericInput(minSegmentInput, 500, 100, 5000) / 1000; // Convert m to km
 
     comparison = compareRoutes(points1, points2, {
       proximityThreshold,
@@ -245,13 +257,15 @@ function renderSegments(type: 'shared' | 'route1' | 'route2'): void {
       break;
   }
 
+  currentSegments = segments;
+
   if (segments.length === 0) {
     segmentList.innerHTML = '<p class="no-results">No segments of this type</p>';
     return;
   }
 
   segmentList.innerHTML = segments.map((seg, i) => `
-    <div class="segment-item">
+    <div class="segment-item" data-segment-index="${i}" style="cursor: pointer;" title="Click to view on map">
       <div class="segment-header">
         <span class="segment-number">#${i + 1}</span>
         <span class="segment-length">${(seg.endDist - seg.startDist).toFixed(1)} km</span>
@@ -262,6 +276,38 @@ function renderSegments(type: 'shared' | 'route1' | 'route2'): void {
       </div>
     </div>
   `).join('');
+
+  // Clicking a segment zooms to it and highlights it on the map
+  segmentList.querySelectorAll('.segment-item').forEach(item => {
+    item.addEventListener('click', () => {
+      const index = parseInt((item as HTMLElement).dataset.segmentIndex || '', 10);
+      const segment = currentSegments[index];
+      if (segment) focusSegmentOnMap(segment);
+    });
+  });
+}
+
+// Zoom the map to a segment and draw a temporary highlight over it
+function focusSegmentOnMap(segment: RouteSegment): void {
+  if (!map || segment.points.length === 0) return;
+
+  if (highlightLine) {
+    map.removeLayer(highlightLine);
+    highlightLine = null;
+  }
+
+  highlightLine = createRoutePolyline(
+    segment.points as MapPoint[],
+    '#eab308',
+    { weight: 7, opacity: 1 }
+  );
+  highlightLine.addTo(map);
+
+  const bounds = L.latLngBounds(segment.points.map(p => [p.lat, p.lon] as [number, number]));
+  map.fitBounds(bounds, { padding: [30, 30] });
+
+  // Scroll the map into view so the zoom is visible
+  document.getElementById('comparison-map')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
 // Setup segment tab filtering
@@ -296,6 +342,7 @@ function renderComparisonMap(
   if (map) {
     map.remove();
   }
+  highlightLine = null; // destroyed with the old map
 
   map = initializeMap('comparison-map');
 
@@ -335,6 +382,7 @@ function renderElevationChart(points1: RoutePoint[], points2: RoutePoint[]): voi
   // Destroy existing chart
   if (elevationChart) {
     elevationChart.destroy();
+    elevationChart = null;
   }
 
   const canvas = document.getElementById('elevation-chart') as HTMLCanvasElement;
@@ -345,6 +393,17 @@ function renderElevationChart(points1: RoutePoint[], points2: RoutePoint[]): voi
 
   const data1 = samplePointsWithDistance(points1, sampleRate);
   const data2 = samplePointsWithDistance(points2, sampleRate);
+
+  // If neither route has elevation data, show a message instead of an empty chart
+  const chartContainer = canvas.parentElement;
+  const noElevationMsg = document.getElementById('no-elevation-msg');
+  if (data1.length === 0 && data2.length === 0) {
+    chartContainer?.setAttribute('hidden', '');
+    noElevationMsg?.removeAttribute('hidden');
+    return;
+  }
+  chartContainer?.removeAttribute('hidden');
+  noElevationMsg?.setAttribute('hidden', '');
 
   elevationChart = new Chart(canvas, {
     type: 'line',
@@ -448,3 +507,34 @@ function haversineDistance(lat1: number, lon1: number, lat2: number, lon2: numbe
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   return R * c;
 }
+
+// Load preferences from localStorage
+function loadPreferences(): void {
+  const prefs = localStorage.getItem('gpx-tools-prefs');
+  if (prefs) {
+    try {
+      const parsed = JSON.parse(prefs);
+      if (parsed.compare?.proximityThreshold) proximityInput.value = parsed.compare.proximityThreshold;
+      if (parsed.compare?.minSegment) minSegmentInput.value = parsed.compare.minSegment;
+    } catch {
+      // Ignore invalid stored prefs
+    }
+  }
+}
+
+function savePreferences(): void {
+  const existingPrefs = JSON.parse(localStorage.getItem('gpx-tools-prefs') || '{}');
+  existingPrefs.compare = {
+    proximityThreshold: proximityInput.value,
+    minSegment: minSegmentInput.value,
+  };
+  localStorage.setItem('gpx-tools-prefs', JSON.stringify(existingPrefs));
+}
+
+// Save preferences on change
+[proximityInput, minSegmentInput].forEach(input => {
+  input.addEventListener('change', savePreferences);
+});
+
+// Load preferences on startup
+loadPreferences();

@@ -112,6 +112,74 @@ total,,,,,,,,,,`;
     const result = processTravelPlan(csv);
     expect(result.stats.totalPoints).toBe(1);
   });
+
+  it('should convert feet with apostrophe to meters', () => {
+    const csv = `Header,,,,,,,,,,
+,,,,,,,,,,
+Start,,coords,369',,,,,,,
+total,,,,,,,,,,`;
+
+    const result = processTravelPlan(csv);
+    // 369 ft = 112.4712 m, rounded to 112.5
+    expect(result.processedPlan).toContain('"112.5"');
+  });
+
+  it('should convert feet with ft suffix to meters', () => {
+    const csv = `Header,,,,,,,,,,
+,,,,,,,,,,
+Start,,coords,100ft,,,,,,,
+total,,,,,,,,,,`;
+
+    const result = processTravelPlan(csv);
+    // 100 ft = 30.48 m, rounded to 30.5
+    expect(result.processedPlan).toContain('"30.5"');
+  });
+
+  it('should NOT treat bare numbers as feet', () => {
+    const csv = `Header,,,,,,,,,,
+,,,,,,,,,,
+Start,,coords,1500,,,,,,,
+total,,,,,,,,,,`;
+
+    const result = processTravelPlan(csv);
+    // Bare "1500" must stay 1500 (not converted from feet to ~457.2m)
+    expect(result.processedPlan).toContain('"1500"');
+    expect(result.processedPlan).not.toContain('"457.2"');
+  });
+
+  it('should still handle negative bare numbers without conversion', () => {
+    const csv = `Header,,,,,,,,,,
+,,,,,,,,,,
+Start,,coords,-45,,,,,,,
+total,,,,,,,,,,`;
+
+    const result = processTravelPlan(csv);
+    expect(result.processedPlan).toContain('"-45"');
+  });
+});
+
+describe('input validation', () => {
+  it('should throw a descriptive error on a non-Caltopo CSV', () => {
+    const csv = `Name,Value
+foo,1`;
+
+    expect(() => processTravelPlan(csv)).toThrow('No data rows found in CSV');
+  });
+
+  it('should throw when the CSV only contains header rows', () => {
+    const csv = `Header,,,,,,,,,,
+,,,,,,,,,,`;
+
+    expect(() => processTravelPlan(csv)).toThrow('No data rows found in CSV');
+  });
+
+  it('should throw when only a total row follows the headers', () => {
+    const csv = `Header,,,,,,,,,,
+,,,,,,,,,,
+total,,,,,,,,,,`;
+
+    expect(() => processTravelPlan(csv)).toThrow('No data rows found in CSV');
+  });
 });
 
 describe('distance parsing', () => {

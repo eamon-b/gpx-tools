@@ -14,6 +14,7 @@ const stats = document.getElementById('stats')!;
 const warnings = document.getElementById('warnings')!;
 const resultFileList = document.getElementById('result-file-list')!;
 const downloadAllBtn = document.getElementById('download-all-btn')!;
+const errorMessage = document.getElementById('error-message')!;
 
 // Options
 const simplificationToleranceInput = document.getElementById('simplification-tolerance') as HTMLInputElement;
@@ -35,6 +36,15 @@ let fileEntries: FileEntry[] = [];
 let optimizationResults: OptimizationResult[] = [];
 
 // Utility functions
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -65,7 +75,7 @@ function renderInputFileList(): void {
   inputFileList.innerHTML = fileEntries.map((entry, index) => `
     <li class="file-item">
       <div class="file-item-info">
-        <span class="file-item-name">${entry.file.name}</span>
+        <span class="file-item-name">${escapeHtml(entry.file.name)}</span>
         <span class="file-item-meta">${formatFileSize(entry.file.size)}</span>
       </div>
       <button class="remove-file-btn" data-index="${index}" title="Remove">✕</button>
@@ -140,6 +150,8 @@ processBtn.addEventListener('click', async () => {
 
   processBtn.disabled = true;
   processBtn.textContent = 'Processing...';
+  errorMessage.hidden = true;
+  errorMessage.textContent = '';
 
   try {
     const options: Partial<OptimizationOptions> = {
@@ -156,7 +168,12 @@ processBtn.addEventListener('click', async () => {
     optimizationResults = [];
     const fileWarnings: Map<string, string[]> = new Map();
 
-    for (const entry of fileEntries) {
+    for (let i = 0; i < fileEntries.length; i++) {
+      const entry = fileEntries[i];
+      processBtn.textContent = `Processing file ${i + 1}/${fileEntries.length}...`;
+      // Yield to the browser so the UI can repaint between files
+      await new Promise(resolve => setTimeout(resolve, 0));
+
       try {
         const result = optimizeGpx(entry.content, entry.file.name, options);
         optimizationResults.push(result);
@@ -191,9 +208,9 @@ processBtn.addEventListener('click', async () => {
       for (const [filename, fileWarningList] of fileWarnings) {
         warningsHtml += `
           <div class="file-warnings">
-            <strong>${filename}</strong>
+            <strong>${escapeHtml(filename)}</strong>
             <ul>
-              ${fileWarningList.map(w => `<li>${w}</li>`).join('')}
+              ${fileWarningList.map(w => `<li>${escapeHtml(w)}</li>`).join('')}
             </ul>
           </div>
         `;
@@ -203,17 +220,19 @@ processBtn.addEventListener('click', async () => {
       warnings.hidden = true;
     }
 
-    // Render result file list
+    // Render result file list with original → optimized comparison
     resultFileList.innerHTML = optimizationResults.map((result, index) => {
-      const sizeReduction = ((1 - result.optimized.fileSize / result.original.fileSize) * 100).toFixed(1);
+      const sizeReduction = result.original.fileSize > 0
+        ? ((1 - result.optimized.fileSize / result.original.fileSize) * 100).toFixed(1)
+        : '0';
       return `
         <div class="file-item">
           <div class="file-item-info">
-            <span class="file-item-name">${result.filename}</span>
+            <span class="file-item-name">${escapeHtml(result.filename)}</span>
             <span class="file-item-meta">
-              ${formatFileSize(result.optimized.fileSize)} (${sizeReduction}% smaller) |
-              ${result.optimized.pointCount.toLocaleString()} points |
-              ${formatDistance(result.optimized.distance)}
+              ${formatFileSize(result.original.fileSize)} → ${formatFileSize(result.optimized.fileSize)} (${sizeReduction}% smaller) |
+              ${result.original.pointCount.toLocaleString()} → ${result.optimized.pointCount.toLocaleString()} points |
+              ${formatDistance(result.original.distance)} → ${formatDistance(result.optimized.distance)}
             </span>
           </div>
           <button class="download-btn" data-index="${index}">Download</button>
@@ -232,7 +251,9 @@ processBtn.addEventListener('click', async () => {
     });
 
   } catch (error) {
-    alert(`Error optimizing GPX files: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    results.hidden = true;
+    errorMessage.textContent = `Error optimizing GPX files: ${error instanceof Error ? error.message : 'Unknown error'}`;
+    errorMessage.hidden = false;
   } finally {
     processBtn.disabled = false;
     processBtn.textContent = 'Optimize GPX Files';
@@ -305,5 +326,14 @@ allCheckboxes.forEach(checkbox => {
   checkbox.addEventListener('change', savePreferences);
 });
 
+// Enable/disable smoothing inputs based on the smoothing checkbox
+function updateSmoothingInputsState(): void {
+  const enabled = elevationSmoothingCheckbox.checked;
+  smoothingWindowInput.disabled = !enabled;
+  spikeThresholdInput.disabled = !enabled;
+}
+elevationSmoothingCheckbox.addEventListener('change', updateSmoothingInputsState);
+
 // Load preferences on startup
 loadPreferences();
+updateSmoothingInputsState();

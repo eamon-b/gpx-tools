@@ -178,15 +178,32 @@ export function compareRoutes(
   const r1Shared = new Array(r1.length).fill(false);
   const r2Shared = new Array(r2.length).fill(false);
 
-  // Find shared points
+  // Find shared points.
+  // The search is windowed around the last matched route2 index for
+  // performance, but that anchor only advances on a match — so if the routes
+  // diverge for a long stretch and reconverge much further along route2, the
+  // fixed window would never see the reconvergence and the rest of route1
+  // would be wrongly reported as unique. To stay efficient while handling
+  // this, we escalate to a full scan of route2 only after several
+  // consecutive windowed misses; a successful match re-anchors the window.
+  const FULL_SCAN_AFTER_MISSES = 5;
   let lastR2Index = 0;
+  let consecutiveMisses = 0;
   for (let i = 0; i < r1.length; i += opts.sampleStep!) {
-    const closest = findClosestPoint(r1[i], r2, lastR2Index, 200);
+    let closest = findClosestPoint(r1[i], r2, lastR2Index, 200);
+
+    if (closest.distance > threshold && consecutiveMisses >= FULL_SCAN_AFTER_MISSES) {
+      // Repeated misses: the routes may have reconverged outside the window.
+      closest = findClosestPoint(r1[i], r2, 0, r2.length);
+    }
 
     if (closest.distance <= threshold) {
       r1Shared[i] = true;
       r2Shared[closest.index] = true;
       lastR2Index = closest.index;
+      consecutiveMisses = 0;
+    } else {
+      consecutiveMisses++;
     }
   }
 
@@ -359,7 +376,30 @@ export function exportComparisonToCSV(comparison: RouteComparison): string {
     ['Shared Percentage', '', '', comparison.sharedPercentage.toFixed(1) + '%'],
   ];
 
-  return [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+  const lines = [headers.join(','), ...rows.map(r => r.join(','))];
+
+  // Per-segment table
+  lines.push('');
+  lines.push(['Segment Type', 'Segment #', 'Start (km)', 'End (km)', 'Length (km)', 'Points'].join(','));
+
+  const addSegmentRows = (segments: RouteSegment[], label: string): void => {
+    segments.forEach((seg, i) => {
+      lines.push([
+        label,
+        (i + 1).toString(),
+        seg.startDist.toFixed(2),
+        seg.endDist.toFixed(2),
+        (seg.endDist - seg.startDist).toFixed(2),
+        seg.points.length.toString(),
+      ].join(','));
+    });
+  };
+
+  addSegmentRows(comparison.sharedSegments, 'Shared');
+  addSegmentRows(comparison.route1OnlySegments, 'Route 1 Only');
+  addSegmentRows(comparison.route2OnlySegments, 'Route 2 Only');
+
+  return lines.join('\n');
 }
 
 /**

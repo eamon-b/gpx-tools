@@ -34,10 +34,37 @@ ${points}
     const gpx = createGpxWithPoints(12000);
     const results = splitGpx(gpx, { maxPoints: 5000 });
 
+    // Chunks overlap by one point: [0..4999], [4999..9998], [9998..11999]
     expect(results).toHaveLength(3);
     expect(results[0].pointCount).toBe(5000);
     expect(results[1].pointCount).toBe(5000);
-    expect(results[2].pointCount).toBe(2000);
+    expect(results[2].pointCount).toBe(2002);
+  });
+
+  it('should overlap chunks by one point so files connect on a device', () => {
+    const gpx = createGpxWithPoints(10);
+    const results = splitGpx(gpx, { maxPoints: 5 });
+
+    // Chunks: points [0..4], [4..8], [8..9]
+    expect(results.map(r => r.pointCount)).toEqual([5, 5, 2]);
+
+    // The last point of chunk 1 (index 4) must be the first point of chunk 2
+    const overlapLat = `lat="${-37.8136 + 4 * 0.001}"`;
+    expect(results[0].content).toContain(overlapLat);
+    expect(results[1].content).toContain(overlapLat);
+
+    // And the last point of chunk 2 (index 8) starts chunk 3
+    const overlapLat2 = `lat="${-37.8136 + 8 * 0.001}"`;
+    expect(results[1].content).toContain(overlapLat2);
+    expect(results[2].content).toContain(overlapLat2);
+  });
+
+  it('should throw on zero or negative maxPoints', () => {
+    const gpx = createGpxWithPoints(10);
+
+    expect(() => splitGpx(gpx, { maxPoints: 0 })).toThrow('maxPoints must be a positive number');
+    expect(() => splitGpx(gpx, { maxPoints: -100 })).toThrow('maxPoints must be a positive number');
+    expect(() => splitGpx(gpx, { maxPoints: NaN })).toThrow('maxPoints must be a positive number');
   });
 
   it('should generate numbered filenames when splitting', () => {
@@ -186,6 +213,84 @@ ${points}
   it('should use default options when none provided', () => {
     expect(GPX_SPLITTER_DEFAULTS.maxPoints).toBe(5000);
     expect(GPX_SPLITTER_DEFAULTS.waypointMaxDistance).toBe(5);
+  });
+
+  it('should split route-only GPX files', () => {
+    const rtepts = Array.from({ length: 6 }, (_, i) => {
+      const lat = -37.8136 + (i * 0.001);
+      const lon = 144.9631 + (i * 0.001);
+      return `    <rtept lat="${lat}" lon="${lon}"><ele>${i}</ele></rtept>`;
+    }).join('\n');
+    const gpx = `<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1">
+  <rte>
+    <name>My Route</name>
+${rtepts}
+  </rte>
+</gpx>`;
+
+    const results = splitGpx(gpx, { maxPoints: 4 });
+
+    // 6 points, maxPoints 4, one-point overlap: [0..3], [3..5]
+    expect(results).toHaveLength(2);
+    expect(results.map(r => r.pointCount)).toEqual([4, 3]);
+    expect(results[0].filename).toBe('My Route_1.gpx');
+    expect(results[1].filename).toBe('My Route_2.gpx');
+    // Route points are written as tracks in the output
+    expect(results[0].content).toContain('<trk>');
+  });
+
+  it('should handle a GPX with both tracks and routes', () => {
+    const gpx = `<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1">
+  <trk>
+    <name>A Track</name>
+    <trkseg>
+      <trkpt lat="-37.8136" lon="144.9631"><ele>0</ele></trkpt>
+    </trkseg>
+  </trk>
+  <rte>
+    <name>A Route</name>
+    <rtept lat="-33.8688" lon="151.2093"><ele>0</ele></rtept>
+  </rte>
+</gpx>`;
+
+    const results = splitGpx(gpx);
+
+    expect(results).toHaveLength(2);
+    expect(results[0].filename).toBe('A Track.gpx');
+    expect(results[1].filename).toBe('A Route.gpx');
+  });
+
+  it('should deduplicate filenames for same-named tracks', () => {
+    const gpx = `<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1">
+  <trk>
+    <name>Same Name</name>
+    <trkseg>
+      <trkpt lat="-37.8136" lon="144.9631"><ele>0</ele></trkpt>
+    </trkseg>
+  </trk>
+  <trk>
+    <name>Same Name</name>
+    <trkseg>
+      <trkpt lat="-33.8688" lon="151.2093"><ele>0</ele></trkpt>
+    </trkseg>
+  </trk>
+  <trk>
+    <name>Same Name</name>
+    <trkseg>
+      <trkpt lat="-34.9285" lon="138.6007"><ele>0</ele></trkpt>
+    </trkseg>
+  </trk>
+</gpx>`;
+
+    const results = splitGpx(gpx);
+
+    expect(results).toHaveLength(3);
+    const filenames = results.map(r => r.filename);
+    expect(filenames).toEqual(['Same Name.gpx', 'Same Name_2.gpx', 'Same Name_3.gpx']);
+    expect(new Set(filenames).size).toBe(3);
   });
 
   it('should handle empty GPX', () => {

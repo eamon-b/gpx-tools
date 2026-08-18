@@ -1,4 +1,4 @@
-const API_BASE = typeof import.meta !== 'undefined' && import.meta.env?.PROD ? '/api' : 'http://localhost:3000/api';
+const API_BASE = '/api';
 
 interface POIRequest {
   bounds: {

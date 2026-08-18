@@ -13,6 +13,9 @@ const gpxFileList = document.getElementById('gpx-file-list')!;
 const gpxDownloadAll = document.getElementById('gpx-download-all')!;
 const maxPointsInput = document.getElementById('max-points') as HTMLInputElement;
 const waypointDistanceInput = document.getElementById('waypoint-distance') as HTMLInputElement;
+const gpxError = document.getElementById('gpx-error')!;
+const gpxErrorMessage = document.getElementById('gpx-error-message')!;
+const gpxErrorDismiss = document.getElementById('gpx-error-dismiss')!;
 
 // State
 let gpxFile: File | null = null;
@@ -29,6 +32,18 @@ function downloadFile(filename: string, content: string, mimeType: string): void
   const blob = new Blob([content], { type: mimeType });
   saveAs(blob, filename);
 }
+
+// Inline error handling
+function showError(message: string): void {
+  gpxErrorMessage.textContent = message;
+  gpxError.removeAttribute('hidden');
+}
+
+function hideError(): void {
+  gpxError.setAttribute('hidden', '');
+}
+
+gpxErrorDismiss.addEventListener('click', hideError);
 
 // Upload handling
 function setupUploadArea(
@@ -89,6 +104,7 @@ function showFileInfo(area: HTMLElement, fileInfo: HTMLElement, file: File): voi
 // GPX handling
 setupUploadArea(gpxUploadArea, gpxFileInput, gpxFileInfo, (file) => {
   gpxFile = file;
+  hideError();
   if (file) {
     showFileInfo(gpxUploadArea, gpxFileInfo, file);
     gpxProcessBtn.disabled = false;
@@ -104,13 +120,22 @@ gpxProcessBtn.addEventListener('click', async () => {
 
   gpxProcessBtn.disabled = true;
   gpxProcessBtn.textContent = 'Processing...';
+  hideError();
 
   try {
     const content = await gpxFile.text();
-    const maxPoints = parseInt(maxPointsInput.value) || 5000;
+    // Clamp to a sane minimum: negative/zero values would be invalid
+    const maxPoints = Math.max(100, parseInt(maxPointsInput.value) || 5000);
     const waypointMaxDistance = parseFloat(waypointDistanceInput.value) || 5;
+    maxPointsInput.value = String(maxPoints);
 
     gpxSplitResults = splitGpx(content, { maxPoints, waypointMaxDistance });
+
+    if (gpxSplitResults.length === 0) {
+      gpxResults.setAttribute('hidden', '');
+      showError('No track or route points were found in this file, so no output files were created. Check that the GPX contains a <trk> or <rte> with points.');
+      return;
+    }
 
     // Show results
     gpxResults.removeAttribute('hidden');
@@ -144,7 +169,8 @@ gpxProcessBtn.addEventListener('click', async () => {
     });
 
   } catch (error) {
-    alert(`Error processing GPX: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    gpxResults.setAttribute('hidden', '');
+    showError(`Error processing GPX: ${error instanceof Error ? error.message : 'Unknown error'}`);
   } finally {
     gpxProcessBtn.disabled = false;
     gpxProcessBtn.textContent = 'Split GPX';

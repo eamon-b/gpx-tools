@@ -3,6 +3,7 @@ import type {
   GpxData,
   GpxTrack,
   GpxSegment,
+  GpxWaypoint,
   OptimizationOptions,
   OptimizationResult,
   OptimizationStats
@@ -21,7 +22,6 @@ export const GPX_OPTIMIZER_DEFAULTS: OptimizationOptions = {
   spikeThreshold: 50,               // 50 meters - max valid elevation change between points
   truncateStart: 0,                 // disabled by default
   truncateEnd: 0,                   // disabled by default
-  stripExtensions: true,
   preserveTimestamps: true,
   coordinatePrecision: 6,           // ~0.11 meter precision
   maxDistanceChangeRatio: 0.05,     // 5% - warn if distance changes by more than this
@@ -381,6 +381,114 @@ export function truncateTrack(
 }
 
 /**
+ * Truncate a set of tracks at the file level.
+ *
+ * truncateStart trims from the beginning of the first track's first segment;
+ * truncateEnd trims from the end of the last track's last segment. If the trim
+ * distance exceeds one segment's length, it spills across segment (and track)
+ * boundaries. Gaps between segments do not count toward the trim distance.
+ *
+ * @param tracks - Tracks to truncate (not mutated)
+ * @param truncateStartMeters - Distance in meters to remove from the file start (0 = disabled)
+ * @param truncateEndMeters - Distance in meters to remove from the file end (0 = disabled)
+ * @returns New track array with truncation applied; empty segments/tracks removed
+ */
+export function truncateTracks(
+  tracks: GpxTrack[],
+  truncateStartMeters: number,
+  truncateEndMeters: number
+): GpxTrack[] {
+  interface FlatPoint {
+    trackIndex: number;
+    segmentIndex: number;
+    point: GpxPoint;
+  }
+
+  const flat: FlatPoint[] = [];
+  tracks.forEach((track, trackIndex) => {
+    track.segments.forEach((segment, segmentIndex) => {
+      for (const point of segment.points) {
+        flat.push({ trackIndex, segmentIndex, point });
+      }
+    });
+  });
+
+  if (flat.length < 2) {
+    return tracks;
+  }
+
+  // Distance of the edge leading into flat[i]; 0 across segment boundaries
+  const edgeDistance = (i: number): number => {
+    const a = flat[i - 1];
+    const b = flat[i];
+    if (a.trackIndex !== b.trackIndex || a.segmentIndex !== b.segmentIndex) {
+      return 0;
+    }
+    return haversineDistance3D(
+      a.point.lat, a.point.lon, a.point.ele,
+      b.point.lat, b.point.lon, b.point.ele
+    );
+  };
+
+  let startIndex = 0;
+  let endIndex = flat.length - 1;
+
+  // Find start index (same semantics as truncateTrack, but file-wide)
+  if (truncateStartMeters > 0) {
+    let accumulatedDistance = 0;
+    for (let i = 1; i < flat.length; i++) {
+      accumulatedDistance += edgeDistance(i);
+      if (accumulatedDistance >= truncateStartMeters) {
+        startIndex = i;
+        break;
+      }
+    }
+  }
+
+  // Find end index, walking backwards from the end of the last track.
+  // After processing edge i, accumulatedDistance is the distance from
+  // flat[i - 1] to the original end, so flat[i - 1] is the last kept point.
+  if (truncateEndMeters > 0) {
+    let accumulatedDistance = 0;
+    for (let i = flat.length - 1; i > startIndex; i--) {
+      accumulatedDistance += edgeDistance(i);
+      if (accumulatedDistance >= truncateEndMeters) {
+        endIndex = i - 1;
+        break;
+      }
+    }
+  }
+
+  // Ensure at least 2 points remain
+  if (endIndex - startIndex < 1) {
+    if (startIndex < flat.length - 1) {
+      endIndex = Math.min(startIndex + 1, flat.length - 1);
+    } else {
+      startIndex = Math.max(0, flat.length - 2);
+      endIndex = flat.length - 1;
+    }
+  }
+
+  // Rebuild track/segment structure from the kept range
+  const rebuilt: GpxTrack[] = tracks.map(track => ({ name: track.name, segments: [] }));
+  const segmentMap = new Map<string, GpxSegment>();
+
+  for (let i = startIndex; i <= endIndex; i++) {
+    const fp = flat[i];
+    const key = `${fp.trackIndex}:${fp.segmentIndex}`;
+    let segment = segmentMap.get(key);
+    if (!segment) {
+      segment = { points: [] };
+      segmentMap.set(key, segment);
+      rebuilt[fp.trackIndex].segments.push(segment);
+    }
+    segment.points.push(fp.point);
+  }
+
+  return rebuilt.filter(track => track.segments.length > 0);
+}
+
+/**
  * Round coordinates to specified precision
  */
 export function roundCoordinates(points: GpxPoint[], precision: number): GpxPoint[] {
@@ -394,11 +502,24 @@ export function roundCoordinates(points: GpxPoint[], precision: number): GpxPoin
 }
 
 /**
+ * Escape XML special characters
+ */
+function escapeXml(str: string): string {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+/**
  * Generate optimized GPX XML from processed data
  */
 export function generateOptimizedGpx(
   tracks: GpxTrack[],
-  options: OptimizationOptions
+  options: OptimizationOptions,
+  waypoints: GpxWaypoint[] = []
 ): string {
   let xml = `<?xml version="1.0" encoding="UTF-8"?>
 <gpx version="1.1" creator="GPX Tools - Optimizer"
@@ -407,16 +528,29 @@ export function generateOptimizedGpx(
   xsi:schemaLocation="http://www.topografix.com/GPX/1/1 http://www.topografix.com/GPX/1/1/gpx.xsd">
 `;
 
-  for (const track of tracks) {
-    const escapedName = track.name
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&apos;');
+  // Preserve waypoints from the input file
+  for (const wpt of waypoints) {
+    xml += `  <wpt lat="${wpt.lat}" lon="${wpt.lon}">
+`;
+    if (wpt.ele !== 0) {
+      xml += `    <ele>${wpt.ele}</ele>
+`;
+    }
+    if (wpt.name) {
+      xml += `    <name>${escapeXml(wpt.name)}</name>
+`;
+    }
+    if (wpt.desc) {
+      xml += `    <desc>${escapeXml(wpt.desc)}</desc>
+`;
+    }
+    xml += `  </wpt>
+`;
+  }
 
+  for (const track of tracks) {
     xml += `  <trk>
-    <name>${escapedName}</name>
+    <name>${escapeXml(track.name)}</name>
 `;
 
     for (const segment of track.segments) {
@@ -493,25 +627,20 @@ function processSegment(
 ): GpxSegment {
   let points = [...segment.points];
 
-  // 1. Truncate start/end for privacy
-  if (options.truncateStart > 0 || options.truncateEnd > 0) {
-    points = truncateTrack(points, options.truncateStart, options.truncateEnd);
-  }
-
-  // 2. Remove elevation spikes
+  // 1. Remove elevation spikes
   if (options.elevationSmoothing) {
     points = removeElevationSpikes(points, options.spikeThreshold);
   }
 
-  // 3. Apply elevation smoothing
+  // 2. Apply elevation smoothing
   if (options.elevationSmoothing && options.elevationSmoothingWindow > 1) {
     points = smoothElevation(points, options.elevationSmoothingWindow);
   }
 
-  // 4. Simplify track with Douglas-Peucker
+  // 3. Simplify track with Douglas-Peucker
   points = douglasPeucker(points, options.simplificationTolerance);
 
-  // 5. Round coordinates
+  // 4. Round coordinates
   points = roundCoordinates(points, options.coordinatePrecision);
 
   return { points };
@@ -561,12 +690,18 @@ export function optimizeGpx(
   }
 
   // Convert routes to tracks if present
-  const allTracks: GpxTrack[] = [...gpxData.tracks];
+  let allTracks: GpxTrack[] = [...gpxData.tracks];
   for (const route of gpxData.routes) {
     allTracks.push({
       name: route.name || 'Converted Route',
       segments: [{ points: route.points }]
     });
+  }
+
+  // Truncate start/end for privacy at the file level (not per segment),
+  // so multi-segment files only lose distance at the file's start and end
+  if (opts.truncateStart > 0 || opts.truncateEnd > 0) {
+    allTracks = truncateTracks(allTracks, opts.truncateStart, opts.truncateEnd);
   }
 
   // Process each track
@@ -575,8 +710,8 @@ export function optimizeGpx(
     segments: track.segments.map(segment => processSegment(segment, opts))
   }));
 
-  // Generate optimized GPX
-  const optimizedContent = generateOptimizedGpx(optimizedTracks, opts);
+  // Generate optimized GPX, preserving waypoints from the input file
+  const optimizedContent = generateOptimizedGpx(optimizedTracks, opts, gpxData.waypoints);
 
   // Get optimized stats
   const optimizedPoints: GpxPoint[] = [];

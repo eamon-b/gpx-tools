@@ -6,11 +6,12 @@ import {
   calculateTrackDistance,
   calculateElevationStats,
   truncateTrack,
+  truncateTracks,
   roundCoordinates,
   optimizeGpx,
   GPX_OPTIMIZER_DEFAULTS
 } from './gpx-optimizer';
-import type { GpxPoint } from './types';
+import type { GpxPoint, GpxTrack } from './types';
 
 describe('douglasPeucker', () => {
   it('should return same points when 2 or fewer points', () => {
@@ -435,6 +436,92 @@ describe('truncateTrack', () => {
   });
 });
 
+describe('truncateTracks (file-level truncation)', () => {
+  // Points 0.01 degrees latitude apart are ~1112m apart
+  const seg1: GpxPoint[] = [
+    { lat: -37.80, lon: 144.9, ele: 0, time: null },
+    { lat: -37.81, lon: 144.9, ele: 0, time: null },
+    { lat: -37.82, lon: 144.9, ele: 0, time: null }
+  ];
+  const seg2: GpxPoint[] = [
+    { lat: -37.90, lon: 144.9, ele: 0, time: null },
+    { lat: -37.91, lon: 144.9, ele: 0, time: null },
+    { lat: -37.92, lon: 144.9, ele: 0, time: null }
+  ];
+
+  const makeTrack = (name: string, segments: GpxPoint[][]): GpxTrack => ({
+    name,
+    segments: segments.map(points => ({ points: [...points] }))
+  });
+
+  it('should return same structure when no truncation specified', () => {
+    const result = truncateTracks([makeTrack('T', [seg1, seg2])], 0, 0);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].segments[0].points).toHaveLength(3);
+    expect(result[0].segments[1].points).toHaveLength(3);
+  });
+
+  it('should trim start only from the first segment, leaving later segments intact', () => {
+    const result = truncateTracks([makeTrack('T', [seg1, seg2])], 500, 0);
+
+    // First segment loses its first point; second segment untouched
+    expect(result[0].segments[0].points).toHaveLength(2);
+    expect(result[0].segments[0].points[0].lat).toBe(-37.81);
+    expect(result[0].segments[1].points).toHaveLength(3);
+    expect(result[0].segments[1].points[0].lat).toBe(-37.90);
+  });
+
+  it('should spill start truncation across segment boundaries', () => {
+    // Segment 1 is ~2224m long; truncating 3000m must consume it entirely
+    // and continue into segment 2 (gaps between segments do not count)
+    const result = truncateTracks([makeTrack('T', [seg1, seg2])], 3000, 0);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].segments).toHaveLength(1);
+    expect(result[0].segments[0].points).toHaveLength(2);
+    expect(result[0].segments[0].points[0].lat).toBe(-37.91);
+  });
+
+  it('should trim end only from the last segment, leaving earlier segments intact', () => {
+    const result = truncateTracks([makeTrack('T', [seg1, seg2])], 0, 500);
+
+    expect(result[0].segments[0].points).toHaveLength(3);
+    expect(result[0].segments[1].points).toHaveLength(2);
+    expect(result[0].segments[1].points[result[0].segments[1].points.length - 1].lat).toBe(-37.91);
+  });
+
+  it('should spill end truncation across segment boundaries', () => {
+    const result = truncateTracks([makeTrack('T', [seg1, seg2])], 0, 3000);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].segments).toHaveLength(1);
+    expect(result[0].segments[0].points).toHaveLength(2);
+    expect(result[0].segments[0].points[1].lat).toBe(-37.81);
+  });
+
+  it('should trim start from first track and end from last track in multi-track files', () => {
+    const tracks = [makeTrack('A', [seg1]), makeTrack('B', [seg2])];
+    const result = truncateTracks(tracks, 500, 500);
+
+    expect(result).toHaveLength(2);
+    expect(result[0].segments[0].points).toHaveLength(2);
+    expect(result[0].segments[0].points[0].lat).toBe(-37.81);
+    expect(result[1].segments[0].points).toHaveLength(2);
+    expect(result[1].segments[0].points[1].lat).toBe(-37.91);
+  });
+
+  it('should preserve at least 2 points when truncation is too aggressive', () => {
+    const result = truncateTracks([makeTrack('T', [seg1])], 1500, 1500);
+
+    const totalPoints = result.reduce(
+      (sum, t) => sum + t.segments.reduce((s, seg) => s + seg.points.length, 0),
+      0
+    );
+    expect(totalPoints).toBeGreaterThanOrEqual(2);
+  });
+});
+
 describe('roundCoordinates', () => {
   it('should round coordinates to specified precision', () => {
     const points: GpxPoint[] = [
@@ -749,6 +836,90 @@ describe('optimizeGpx', () => {
     ).toThrow('exceeds maximum allowed size');
   });
 
+  it('should preserve waypoints in the optimized output', () => {
+    const gpxWithWaypoints = `<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1">
+  <wpt lat="-37.8005" lon="144.9005">
+    <ele>102</ele>
+    <name>Water Source</name>
+    <desc>Reliable creek</desc>
+  </wpt>
+  <wpt lat="-37.8025" lon="144.9025">
+    <name>Camp &amp; Cafe</name>
+  </wpt>
+  <trk>
+    <name>Test Track</name>
+    <trkseg>
+      <trkpt lat="-37.8000" lon="144.9000"><ele>100</ele></trkpt>
+      <trkpt lat="-37.8010" lon="144.9010"><ele>105</ele></trkpt>
+      <trkpt lat="-37.8020" lon="144.9020"><ele>110</ele></trkpt>
+    </trkseg>
+  </trk>
+</gpx>`;
+
+    const result = optimizeGpx(gpxWithWaypoints, 'waypoints.gpx');
+
+    expect(result.content).toContain('<wpt lat="-37.8005" lon="144.9005">');
+    expect(result.content).toContain('<name>Water Source</name>');
+    expect(result.content).toContain('<desc>Reliable creek</desc>');
+    expect(result.content).toContain('<ele>102</ele>');
+    // Special characters must be XML-escaped
+    expect(result.content).toContain('<name>Camp &amp; Cafe</name>');
+    expect(result.content.match(/<wpt /g)?.length).toBe(2);
+  });
+
+  it('should not count waypoints toward point statistics', () => {
+    const gpxWithWaypoints = `<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1">
+  <wpt lat="-37.8005" lon="144.9005"><name>WP</name></wpt>
+  <trk>
+    <name>Test Track</name>
+    <trkseg>
+      <trkpt lat="-37.8000" lon="144.9000"><ele>100</ele></trkpt>
+      <trkpt lat="-37.8010" lon="144.9010"><ele>105</ele></trkpt>
+    </trkseg>
+  </trk>
+</gpx>`;
+
+    const result = optimizeGpx(gpxWithWaypoints, 'waypoints.gpx');
+
+    expect(result.original.pointCount).toBe(2);
+  });
+
+  it('should apply truncation at file level, not per segment', () => {
+    // Two segments ~1112m point spacing; truncateStart should only remove
+    // distance from the very beginning of the file, not from each segment
+    const multiSegGpx = `<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1">
+  <trk>
+    <name>Multi-segment Track</name>
+    <trkseg>
+      <trkpt lat="-37.8" lon="144.9"><ele>100</ele></trkpt>
+      <trkpt lat="-37.81" lon="144.9"><ele>100</ele></trkpt>
+      <trkpt lat="-37.82" lon="144.9"><ele>100</ele></trkpt>
+    </trkseg>
+    <trkseg>
+      <trkpt lat="-37.9" lon="144.9"><ele>100</ele></trkpt>
+      <trkpt lat="-37.91" lon="144.9"><ele>100</ele></trkpt>
+      <trkpt lat="-37.92" lon="144.9"><ele>100</ele></trkpt>
+    </trkseg>
+  </trk>
+</gpx>`;
+
+    const result = optimizeGpx(multiSegGpx, 'multiseg.gpx', {
+      truncateStart: 500,
+      elevationSmoothing: false,
+      simplificationTolerance: 1,
+      maxDistanceChangeRatio: 1
+    });
+
+    // First point of the file removed
+    expect(result.content).not.toContain('lat="-37.8"');
+    // Second segment's start must be untouched
+    expect(result.content).toContain('lat="-37.9"');
+    expect(result.content).toContain('lat="-37.81"');
+  });
+
   it('should throw error when point count exceeds limit', () => {
     let gpx = `<?xml version="1.0" encoding="UTF-8"?>
 <gpx version="1.1">
@@ -783,7 +954,6 @@ describe('GPX_OPTIMIZER_DEFAULTS', () => {
     expect(GPX_OPTIMIZER_DEFAULTS.spikeThreshold).toBe(50);
     expect(GPX_OPTIMIZER_DEFAULTS.truncateStart).toBe(0);
     expect(GPX_OPTIMIZER_DEFAULTS.truncateEnd).toBe(0);
-    expect(GPX_OPTIMIZER_DEFAULTS.stripExtensions).toBe(true);
     expect(GPX_OPTIMIZER_DEFAULTS.preserveTimestamps).toBe(true);
     expect(GPX_OPTIMIZER_DEFAULTS.coordinatePrecision).toBe(6);
     expect(GPX_OPTIMIZER_DEFAULTS.maxDistanceChangeRatio).toBe(0.05);

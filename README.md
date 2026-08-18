@@ -4,39 +4,47 @@ A web application for trail planning and GPX file processing. Features both clie
 
 ## Features
 
-### GPX Splitter (`/tools/splitter`)
+### GPX Splitter (`/tools/splitter.html`)
 - Split large GPX files into bike-computer-sized chunks (default: 5000 points)
 - Preserves waypoints that are near each track segment
 - Configurable max points per file and waypoint inclusion distance
 
-### Travel Plan Processor (`/tools/planner`)
+### Travel Plan Processor (`/tools/planner.html`)
 - Parse Caltopo CSV travel plan exports
 - Calculate cumulative distance, ascent, and descent
 - Automatically identify resupply points based on keywords
 - Generate processed travel plan and resupply summary CSVs
 
-### POI Enrichment (`/tools/enrich`)
+### POI Enrichment (`/tools/enrich.html`)
 - Enrich GPX routes with Points of Interest from OpenStreetMap
 - Find water sources, camping, resupply points, transport, and emergency services
 - Filter POIs by distance from route
 - Export enriched data as CSV or GPX waypoints
 
-### Route Comparison (`/tools/compare`)
+### Route Comparison (`/tools/compare.html`)
 - Compare two GPX routes to identify shared and divergent segments
 - Calculate distance, ascent, and descent differences
 - Identify divergence and convergence points
 - Export comparison summary as CSV
 
-### Daylight Calculator (`/tools/daylight`)
+### Daylight Calculator (`/tools/daylight.html`)
 - Calculate sunrise, sunset, and daylight hours along a route
 - Plan multi-day hikes with daylight-aware scheduling
 - Moon phase and illumination data
 - Export daylight plans as CSV
 
-### Trail Website (`/trails`)
-- Pre-built trail pages with processed track data
-- Waypoint and climate information
-- Build-time data processing for fast page loads
+### GPX Combiner (`/tools/combiner.html`)
+- Merge multiple GPX files into a single continuous route
+- Drag to reorder files, or auto-order for best geographic continuity
+- Remove duplicate waypoints
+- Warn about large gaps between combined tracks (configurable threshold)
+
+### GPX Optimizer (`/tools/optimizer.html`)
+- Reduce GPX file size while preserving route accuracy
+- Simplify tracks with a configurable tolerance (meters)
+- Smooth elevation data and remove elevation spikes
+- Truncate route start/end for privacy
+- Control timestamp preservation and coordinate precision
 
 ## Development
 
@@ -47,7 +55,7 @@ npm install
 # Start dev server (static site only)
 npm run dev
 
-# Build for production (includes trail data processing)
+# Build for production
 npm run build
 
 # Preview production build
@@ -56,6 +64,8 @@ npm run preview
 # Run with serverless functions (requires Vercel CLI)
 vercel dev
 ```
+
+`npm run dev` serves the client-side tools at http://localhost:5173. Tools that call the serverless API (e.g. POI Enrichment) also need `vercel dev` running on port 3000; with both running, the Vite dev server proxies `/api` requests to `vercel dev` automatically.
 
 ## Testing
 

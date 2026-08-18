@@ -11,6 +11,7 @@ const csvResults = document.getElementById('csv-results')!;
 const csvStats = document.getElementById('csv-stats')!;
 const csvFileList = document.getElementById('csv-file-list')!;
 const csvDownloadAll = document.getElementById('csv-download-all')!;
+const csvError = document.getElementById('csv-error')!;
 const resupplyKeywordsInput = document.getElementById('resupply-keywords') as HTMLInputElement;
 const includeStartCheckbox = document.getElementById('include-start') as HTMLInputElement;
 const includeEndCheckbox = document.getElementById('include-end') as HTMLInputElement;
@@ -25,6 +26,15 @@ let csvFile: File | null = null;
 let csvProcessResults: ProcessResult | null = null;
 
 // Utility functions
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -118,6 +128,8 @@ csvProcessBtn.addEventListener('click', async () => {
 
   csvProcessBtn.disabled = true;
   csvProcessBtn.textContent = 'Processing...';
+  csvError.setAttribute('hidden', '');
+  csvError.textContent = '';
 
   try {
     const content = await csvFile.text();
@@ -131,11 +143,12 @@ csvProcessBtn.addEventListener('click', async () => {
     const csvDelimiter = csvDelimiterSelect.value as CsvDelimiter;
 
     const isGpxFile = csvFile.name.toLowerCase().endsWith('.gpx');
+    let waypointMatchHtml = '';
 
     if (isGpxFile) {
       const waypointMaxDistance = parseInt(waypointMaxDistanceInput.value) || 200;
 
-      csvProcessResults = processGpxTravelPlan(content, {
+      const gpxResults = processGpxTravelPlan(content, {
         resupplyKeywords: keywords,
         includeStartAsResupply: includeStartCheckbox.checked,
         includeEndAsResupply: includeEndCheckbox.checked,
@@ -144,6 +157,8 @@ csvProcessBtn.addEventListener('click', async () => {
         csvDelimiter,
         waypointMaxDistance,
       });
+      csvProcessResults = gpxResults;
+      waypointMatchHtml = `<p><strong>Waypoints matched:</strong> ${gpxResults.stats.matchedWaypoints} of ${gpxResults.stats.totalWaypoints} waypoints matched (within ${waypointMaxDistance}m of track)</p>`;
     } else {
       csvProcessResults = processTravelPlan(content, {
         resupplyKeywords: keywords,
@@ -170,7 +185,8 @@ csvProcessBtn.addEventListener('click', async () => {
       : csvProcessResults.stats.totalDescent;
 
     csvStats.innerHTML = `
-      <p><strong>Total points:</strong> ${csvProcessResults.stats.totalPoints}</p>
+      <p><strong>Datasheet rows:</strong> ${csvProcessResults.stats.totalPoints}</p>
+      ${waypointMatchHtml}
       <p><strong>Resupply points:</strong> ${csvProcessResults.stats.resupplyCount}</p>
       <p><strong>Total distance:</strong> ${displayDistance.toFixed(2)} ${distLabel}</p>
       <p><strong>Total ascent:</strong> ${Math.round(displayAscent).toLocaleString()} ${eleLabel}</p>
@@ -182,14 +198,14 @@ csvProcessBtn.addEventListener('click', async () => {
     csvFileList.innerHTML = `
       <div class="file-item">
         <div class="file-item-info">
-          <span class="file-item-name">${baseName}_processed.csv</span>
+          <span class="file-item-name">${escapeHtml(baseName)}_processed.csv</span>
           <span class="file-item-meta">Full travel plan with cumulative stats</span>
         </div>
         <button class="download-btn" data-file="processed">Download</button>
       </div>
       <div class="file-item">
         <div class="file-item-info">
-          <span class="file-item-name">${baseName}_resupply.csv</span>
+          <span class="file-item-name">${escapeHtml(baseName)}_resupply.csv</span>
           <span class="file-item-meta">${csvProcessResults.stats.resupplyCount} resupply points</span>
         </div>
         <button class="download-btn" data-file="resupply">Download</button>
@@ -210,7 +226,9 @@ csvProcessBtn.addEventListener('click', async () => {
     });
 
   } catch (error) {
-    alert(`Error processing file: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    csvResults.setAttribute('hidden', '');
+    csvError.textContent = `Error processing file: ${error instanceof Error ? error.message : 'Unknown error'}`;
+    csvError.removeAttribute('hidden');
   } finally {
     csvProcessBtn.disabled = false;
     csvProcessBtn.textContent = 'Process Travel Plan';

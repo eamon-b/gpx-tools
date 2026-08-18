@@ -23,6 +23,10 @@ export interface DaylightInfo {
   civilTwilightEnd: Date;
   nauticalTwilightStart: Date;
   nauticalTwilightEnd: Date;
+  /** True at high latitudes when the sun never sets (24h daylight) */
+  polarDay: boolean;
+  /** True at high latitudes when the sun never rises (0h daylight) */
+  polarNight: boolean;
 }
 
 export interface LocationDaylight extends DaylightInfo {
@@ -42,10 +46,21 @@ export interface DaylightPlanDay {
   nightHikingRequired: boolean;
   startBeforeSunrise: boolean;
   endAfterSunset: boolean;
+  /** Distance covered this day in km */
+  distanceKm: number;
+  /** Sun never sets on this day (high latitudes) */
+  polarDay: boolean;
+  /** Sun never rises on this day (high latitudes) */
+  polarNight: boolean;
 }
 
 export interface DaylightPlanOptions {
-  startDate: Date;
+  /**
+   * Trip start date. A 'YYYY-MM-DD' string is interpreted as a calendar day
+   * in the route's (longitude-estimated) local time zone — preferred, as a
+   * Date carries the browser's time zone which may differ from the route's.
+   */
+  startDate: Date | string;
   dailyTargetKm: number;
   hikingSpeedKmh?: number;
   bufferMinutes?: number;
@@ -60,6 +75,36 @@ export interface DaylightPlan {
   nightHikingDays: number;
   shortestDay: { date: Date; hours: number };
   longestDay: { date: Date; hours: number };
+  /**
+   * Route-local UTC offset in whole hours, estimated from the route's mean
+   * longitude (offset = round(lon / 15)). Approximate — real time zones
+   * follow political boundaries and DST — but keeps displayed clock times
+   * and calendar days correct regardless of the browser's time zone.
+   */
+  utcOffsetHours: number;
+}
+
+/**
+ * Estimate a location's UTC offset (whole hours) from its longitude.
+ * Approximation: 15 degrees of longitude per hour.
+ */
+export function estimateUtcOffset(lon: number): number {
+  return Math.round(lon / 15);
+}
+
+/** Shift a Date so its UTC fields read as route-local time at the given offset */
+export function shiftToUtcOffset(date: Date, utcOffsetHours: number): Date {
+  return new Date(date.getTime() + utcOffsetHours * 3600000);
+}
+
+/** Format a UTC offset as e.g. "UTC+2", "UTC-7", "UTC+0" */
+export function formatUtcOffset(utcOffsetHours: number): string {
+  return `UTC${utcOffsetHours >= 0 ? '+' : ''}${utcOffsetHours}`;
+}
+
+/** Format a date as YYYY-MM-DD in the route-local (offset) calendar */
+export function formatDateISO(date: Date, utcOffsetHours: number): string {
+  return shiftToUtcOffset(date, utcOffsetHours).toISOString().split('T')[0];
 }
 
 /**
@@ -68,8 +113,26 @@ export interface DaylightPlan {
 export function getDaylightInfo(lat: number, lon: number, date: Date): DaylightInfo {
   const times = SunCalc.getTimes(date, lat, lon);
 
-  const daylightMs = times.sunset.getTime() - times.sunrise.getTime();
-  const daylightHours = daylightMs / (1000 * 60 * 60);
+  // At high latitudes SunCalc returns Invalid Date when the sun never
+  // rises/sets. Detect that case and classify it as polar day (sun above the
+  // horizon at solar noon) or polar night, instead of propagating NaN.
+  const sunriseInvalid = isNaN(times.sunrise.getTime());
+  const sunsetInvalid = isNaN(times.sunset.getTime());
+
+  let polarDay = false;
+  let polarNight = false;
+  let daylightHours: number;
+
+  if (sunriseInvalid || sunsetInvalid) {
+    const noon = isNaN(times.solarNoon.getTime()) ? date : times.solarNoon;
+    const sunUp = SunCalc.getPosition(noon, lat, lon).altitude > 0;
+    polarDay = sunUp;
+    polarNight = !sunUp;
+    daylightHours = sunUp ? 24 : 0;
+  } else {
+    const daylightMs = times.sunset.getTime() - times.sunrise.getTime();
+    daylightHours = daylightMs / (1000 * 60 * 60);
+  }
 
   return {
     date,
@@ -81,6 +144,8 @@ export function getDaylightInfo(lat: number, lon: number, date: Date): DaylightI
     civilTwilightEnd: times.dusk,
     nauticalTwilightStart: times.nauticalDawn,
     nauticalTwilightEnd: times.nauticalDusk,
+    polarDay,
+    polarNight,
   };
 }
 
@@ -209,15 +274,31 @@ export function createDaylightPlan(
   const totalDistance = pointsWithDist[pointsWithDist.length - 1].dist;
   const estimatedDays = Math.ceil(totalDistance / dailyTargetKm);
 
+  // Estimate the route's UTC offset from its mean longitude so that
+  // calendar days and clock times are computed in the route's local time,
+  // not the browser's (which may be a different time zone entirely).
+  const meanLon = routePoints.reduce((sum, p) => sum + p.lon, 0) / routePoints.length;
+  const utcOffsetHours = estimateUtcOffset(meanLon);
+
+  // Anchor each day at route-local noon. A 'YYYY-MM-DD' start date string is
+  // interpreted as that calendar day in route-local time; a Date is used as-is.
+  let startNoon: Date;
+  if (typeof startDate === 'string') {
+    const [y, m, d] = startDate.split('-').map(Number);
+    startNoon = new Date(Date.UTC(y, m - 1, d, 12 - utcOffsetHours));
+  } else {
+    startNoon = startDate;
+  }
+
   const days: DaylightPlanDay[] = [];
   let currentDist = 0;
-  let shortestDay = { date: startDate, hours: Infinity };
-  let longestDay = { date: startDate, hours: 0 };
+  let shortestDay = { date: startNoon, hours: Infinity };
+  let longestDay = { date: startNoon, hours: 0 };
   let nightHikingDays = 0;
 
   for (let dayNum = 0; dayNum < estimatedDays && currentDist < totalDistance; dayNum++) {
-    const date = new Date(startDate);
-    date.setDate(date.getDate() + dayNum);
+    // Walk days as exact 24h steps from the route-local-noon anchor
+    const date = new Date(startNoon.getTime() + dayNum * 86400000);
 
     const startLocation = findPointAtDistance(pointsWithDist, currentDist);
     const endDist = Math.min(currentDist + dailyTargetKm, totalDistance);
@@ -230,12 +311,20 @@ export function createDaylightPlan(
     const distanceToday = endDist - currentDist;
     const hikingHoursNeeded = distanceToday / hikingSpeedKmh;
 
-    // Calculate available daylight hours (with offsets)
-    const availableMs = (
-      daylight.sunset.getTime() - endTimeOffset * 60000 -
-      (daylight.sunrise.getTime() + startTimeOffset * 60000)
-    );
-    const hikingHoursAvailable = availableMs / (1000 * 60 * 60);
+    // Calculate available daylight hours (with offsets). On polar days/nights
+    // sunrise/sunset are Invalid Dates, so fall back to 24h / 0h.
+    let hikingHoursAvailable: number;
+    if (daylight.polarDay) {
+      hikingHoursAvailable = 24;
+    } else if (daylight.polarNight) {
+      hikingHoursAvailable = 0;
+    } else {
+      const availableMs = (
+        daylight.sunset.getTime() - endTimeOffset * 60000 -
+        (daylight.sunrise.getTime() + startTimeOffset * 60000)
+      );
+      hikingHoursAvailable = availableMs / (1000 * 60 * 60);
+    }
 
     const nightHikingRequired = hikingHoursNeeded > hikingHoursAvailable;
 
@@ -262,6 +351,9 @@ export function createDaylightPlan(
       nightHikingRequired,
       startBeforeSunrise: false, // Could be calculated based on schedule
       endAfterSunset: nightHikingRequired,
+      distanceKm: distanceToday,
+      polarDay: daylight.polarDay,
+      polarNight: daylight.polarNight,
     });
 
     currentDist = endDist;
@@ -274,13 +366,28 @@ export function createDaylightPlan(
     nightHikingDays,
     shortestDay,
     longestDay,
+    utcOffsetHours,
   };
 }
 
 /**
- * Format a date as HH:MM in local time
+ * Format a date as HH:MM.
+ *
+ * When `utcOffsetHours` is provided the time is rendered in that fixed
+ * offset (i.e. route-local time); otherwise it falls back to the browser's
+ * local time zone. Invalid dates (e.g. polar day/night sunrise/sunset)
+ * render as an em dash.
  */
-export function formatTime(date: Date): string {
+export function formatTime(date: Date, utcOffsetHours?: number): string {
+  if (isNaN(date.getTime())) return '—';
+
+  if (utcOffsetHours !== undefined) {
+    const shifted = shiftToUtcOffset(date, utcOffsetHours);
+    const h = shifted.getUTCHours().toString().padStart(2, '0');
+    const m = shifted.getUTCMinutes().toString().padStart(2, '0');
+    return `${h}:${m}`;
+  }
+
   return date.toLocaleTimeString('en-US', {
     hour: '2-digit',
     minute: '2-digit',
@@ -340,6 +447,9 @@ export function getMoonInfo(date: Date): {
  * Export daylight plan to CSV
  */
 export function exportDaylightPlanToCSV(plan: DaylightPlan): string {
+  const offset = plan.utcOffsetHours;
+  const offsetLabel = formatUtcOffset(offset);
+
   const headers = [
     'Day',
     'Date',
@@ -347,8 +457,9 @@ export function exportDaylightPlanToCSV(plan: DaylightPlan): string {
     'Start Lon',
     'End Lat',
     'End Lon',
-    'Sunrise',
-    'Sunset',
+    'Distance (km)',
+    `Sunrise (${offsetLabel})`,
+    `Sunset (${offsetLabel})`,
     'Daylight Hours',
     'Available Hiking Hours',
     'Night Hiking Required',
@@ -356,13 +467,16 @@ export function exportDaylightPlanToCSV(plan: DaylightPlan): string {
 
   const rows = plan.days.map((day, i) => [
     i + 1,
-    day.date.toISOString().split('T')[0],
+    // Route-local calendar date (a bare toISOString() would report the UTC
+    // day, which can be off by one relative to the route's time zone)
+    formatDateISO(day.date, offset),
     day.startLocation.lat.toFixed(6),
     day.startLocation.lon.toFixed(6),
     day.endLocation.lat.toFixed(6),
     day.endLocation.lon.toFixed(6),
-    formatTime(day.sunrise),
-    formatTime(day.sunset),
+    day.distanceKm.toFixed(1),
+    day.polarDay ? 'no sunset' : day.polarNight ? 'no sunrise' : formatTime(day.sunrise, offset),
+    day.polarDay ? 'no sunset' : day.polarNight ? 'no sunrise' : formatTime(day.sunset, offset),
     formatDaylightHours(day.daylightHours),
     formatDaylightHours(day.hikingHoursAvailable),
     day.nightHikingRequired ? 'Yes' : 'No',

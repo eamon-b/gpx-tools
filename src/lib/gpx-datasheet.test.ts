@@ -179,6 +179,22 @@ describe('findWaypointVisits', () => {
     expect(visits[0].waypoint.name).toBe('TestPoint');
   });
 
+  it('should match waypoints without elevation to elevated tracks (2D proximity)', () => {
+    // Track at 1500m elevation; waypoint has no elevation (parsed as ele=0).
+    // With 3D distance this would never match (vertical gap alone is 1500m);
+    // proximity must be measured in 2D.
+    const trackPoints: GpxPoint[] = createLinearTrack(0, 0, 0, 0.01, 10, 1500);
+    const waypoints: GpxWaypoint[] = [
+      { lat: 0, lon: 0.005, ele: 0, name: 'NoElevation', desc: '' },
+    ];
+
+    const visits = findWaypointVisits(waypoints, trackPoints, 200); // 200m threshold
+
+    expect(visits).toHaveLength(1);
+    expect(visits[0].waypoint.name).toBe('NoElevation');
+    expect(visits[0].distanceFromTrack).toBeLessThan(200);
+  });
+
   it('should still detect legitimate multiple passes with hysteresis', () => {
     // Create a track that clearly exits far beyond the hysteresis zone (600m for 200m entry)
     // then comes back - this is a legitimate two-pass scenario
@@ -449,6 +465,49 @@ describe('processGpxTravelPlan', () => {
     expect(result.stats.totalPoints).toBe(2); // Just Start and End
     expect(result.processedPlan).toContain('Start:');
     expect(result.processedPlan).toContain('End:');
+  });
+
+  it('should match a waypoint with no <ele> element to a track at 1500m elevation', () => {
+    // Regression test: waypoints without <ele> are parsed as ele=0 and must
+    // still match an elevated track (proximity matching is 2D)
+    let gpxContent = `<?xml version="1.0"?>
+<gpx version="1.1" creator="Test">
+  <wpt lat="0" lon="0.05">
+    <name>NoEleWaypoint</name>
+  </wpt>
+  <trk>
+    <name>High Track</name>
+    <trkseg>
+`;
+    const trackPoints = createLinearTrack(0, 0, 0, 0.1, 50, 1500);
+    for (const pt of trackPoints) {
+      gpxContent += `      <trkpt lat="${pt.lat}" lon="${pt.lon}"><ele>${pt.ele}</ele></trkpt>\n`;
+    }
+    gpxContent += `    </trkseg>
+  </trk>
+</gpx>`;
+
+    const result = processGpxTravelPlan(gpxContent, { waypointMaxDistance: 200 });
+
+    // Waypoint + synthetic Start + synthetic End = 3 rows
+    expect(result.stats.totalPoints).toBe(3);
+    expect(result.processedPlan).toContain('NoEleWaypoint');
+    expect(result.stats.matchedWaypoints).toBe(1);
+    expect(result.stats.totalWaypoints).toBe(1);
+  });
+
+  it('should report matched and total waypoint counts', () => {
+    const trackPoints = createLinearTrack(0, 0, 0, 0.1, 50, 100);
+    const waypoints: GpxWaypoint[] = [
+      { lat: 0, lon: 0.05, ele: 100, name: 'Near', desc: '' },
+      { lat: 5, lon: 5, ele: 100, name: 'FarAway', desc: '' }, // hundreds of km away
+    ];
+
+    const gpxContent = createGpxContent(waypoints, trackPoints);
+    const result = processGpxTravelPlan(gpxContent, { waypointMaxDistance: 1000 });
+
+    expect(result.stats.matchedWaypoints).toBe(1);
+    expect(result.stats.totalWaypoints).toBe(2);
   });
 
   it('should handle distance unit conversion', () => {

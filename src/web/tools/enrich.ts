@@ -17,6 +17,7 @@ const stats = document.getElementById('stats')!;
 const poiList = document.getElementById('poi-list')!;
 const downloadCsvBtn = document.getElementById('download-csv')!;
 const downloadGpxBtn = document.getElementById('download-gpx')!;
+const errorArea = document.getElementById('error-area')!;
 
 // POI type checkboxes
 const poiWaterCheckbox = document.getElementById('poi-water') as HTMLInputElement;
@@ -42,6 +43,27 @@ function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+// Escape OSM-derived (or any untrusted) strings before inserting into HTML
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+// Inline error display (replaces alert())
+function showError(message: string): void {
+  errorArea.textContent = message;
+  errorArea.removeAttribute('hidden');
+}
+
+function clearError(): void {
+  errorArea.textContent = '';
+  errorArea.setAttribute('hidden', '');
 }
 
 // Upload handling
@@ -103,6 +125,7 @@ function showFileInfo(area: HTMLElement, fileInfo: HTMLElement, file: File): voi
 // Setup upload area
 setupUploadArea(gpxUploadArea, gpxFileInput, gpxFileInfo, (file) => {
   gpxFile = file;
+  clearError();
   if (file) {
     showFileInfo(gpxUploadArea, gpxFileInfo, file);
     enrichBtn.disabled = false;
@@ -126,13 +149,47 @@ function getSelectedTypes(): POIType[] {
   return types;
 }
 
+// Progress display: staged updates so the bar moves even for single-chunk
+// runs, with an animated "indeterminate" pulse while a fetch is in flight.
+function updateProgress(message: string): void {
+  progressText.textContent = message;
+
+  let percent: number | null = null;
+  let inFlight = false;
+
+  const chunkMatch = message.match(/chunk (\d+)\/(\d+)/i);
+  if (chunkMatch) {
+    const current = parseInt(chunkMatch[1]);
+    const total = parseInt(chunkMatch[2]);
+    // "Fetching chunk N/M" fires before the fetch, so show completed chunks
+    percent = 10 + ((current - 1) / total) * 75;
+    inFlight = /^Fetching/i.test(message);
+  } else if (message.includes('bounds')) {
+    percent = 5;
+  } else if (message.startsWith('Fetching POIs')) {
+    percent = 10;
+    inFlight = true;
+  } else if (message.startsWith('Processing')) {
+    percent = 90;
+  } else if (message.startsWith('Found')) {
+    percent = 100;
+  }
+
+  if (percent !== null) {
+    progressFill.style.width = `${percent}%`;
+  }
+  progressFill.classList.toggle('indeterminate', inFlight);
+}
+
 // Process GPX
 enrichBtn.addEventListener('click', async () => {
   if (!gpxFile) return;
 
+  clearError();
+
   const types = getSelectedTypes();
   if (types.length === 0) {
-    alert('Please select at least one POI type');
+    showError('Please select at least one POI type');
     return;
   }
 
@@ -140,6 +197,7 @@ enrichBtn.addEventListener('click', async () => {
   progressArea.removeAttribute('hidden');
   results.setAttribute('hidden', '');
   progressFill.style.width = '0%';
+  progressFill.classList.remove('indeterminate');
 
   try {
     const content = await gpxFile.text();
@@ -173,26 +231,22 @@ enrichBtn.addEventListener('click', async () => {
       types,
       bufferKm,
       maxDistanceFromRoute,
-    }, (message) => {
-      progressText.textContent = message;
-      // Simulate progress based on message
-      if (message.includes('chunk')) {
-        const match = message.match(/(\d+)\/(\d+)/);
-        if (match) {
-          const current = parseInt(match[1]);
-          const total = parseInt(match[2]);
-          progressFill.style.width = `${(current / total) * 100}%`;
-        }
-      }
-    });
+    }, updateProgress);
 
     enrichedPOIs = result.pois;
 
     // Show results
     progressArea.setAttribute('hidden', '');
+    progressFill.classList.remove('indeterminate');
     results.removeAttribute('hidden');
 
+    const { queryChunks, failedChunks } = result.stats;
+    const coverageNote = failedChunks > 0
+      ? `<p class="warning"><strong>Loaded ${queryChunks - failedChunks}/${queryChunks} areas (${failedChunks} failed).</strong> Results may be incomplete — try again to retry the failed area${failedChunks === 1 ? '' : 's'}.</p>`
+      : '';
+
     stats.innerHTML = `
+      ${coverageNote}
       <p><strong>Total POIs found:</strong> ${result.stats.totalFound}</p>
       <p><strong>Query time:</strong> ${(result.stats.queryTimeMs / 1000).toFixed(1)}s</p>
       <p><strong>By type:</strong></p>
@@ -206,8 +260,17 @@ enrichBtn.addEventListener('click', async () => {
     setupTabFilters();
 
   } catch (error) {
-    alert(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    let display = `Error: ${message}`;
+    if (/failed to fetch|network|load failed/i.test(message)) {
+      display = 'Error: Could not reach the POI API. It may be down or unreachable — check your connection and try again.';
+      if (import.meta.env.DEV) {
+        display += ' Dev hint: the API is not served by "npm run dev" — run the site with "vercel dev" to enable the serverless functions.';
+      }
+    }
+    showError(display);
     progressArea.setAttribute('hidden', '');
+    progressFill.classList.remove('indeterminate');
   } finally {
     enrichBtn.disabled = false;
   }
@@ -224,11 +287,11 @@ function renderPOIList(pois: EnrichedPOI[]): void {
     <div class="poi-item" data-category="${poi.category}">
       <div class="poi-header">
         <span class="poi-icon">${getCategoryIcon(poi.category)}</span>
-        <span class="poi-name">${getPOIName(poi)}</span>
-        <span class="poi-distance">${(poi.distanceFromRoute * 1000).toFixed(0)}m from route</span>
+        <span class="poi-name">${escapeHtml(getPOIName(poi))}</span>
+        <span class="poi-distance">at km ${poi.distanceAlongRoute.toFixed(1)} &middot; ${(poi.distanceFromRoute * 1000).toFixed(0)}m from route</span>
       </div>
       <div class="poi-details">
-        <p class="poi-description">${getPOIDescription(poi)}</p>
+        <p class="poi-description">${escapeHtml(getPOIDescription(poi))}</p>
         <p class="poi-coords">
           <a href="https://www.openstreetmap.org/?mlat=${poi.lat}&mlon=${poi.lon}#map=17/${poi.lat}/${poi.lon}" target="_blank">
             ${poi.lat.toFixed(5)}, ${poi.lon.toFixed(5)}
@@ -280,9 +343,9 @@ function renderMap(points: MapPoint[], pois: EnrichedPOI[]): void {
       radius: 8,
       fillOpacity: 0.8,
       popup: `
-        <strong>${getPOIName(poi)}</strong><br>
-        ${getPOIDescription(poi)}<br>
-        <em>${(poi.distanceFromRoute * 1000).toFixed(0)}m from route</em>
+        <strong>${escapeHtml(getPOIName(poi))}</strong><br>
+        ${escapeHtml(getPOIDescription(poi))}<br>
+        <em>at km ${poi.distanceAlongRoute.toFixed(1)} &middot; ${(poi.distanceFromRoute * 1000).toFixed(0)}m from route</em>
       `,
     });
 
@@ -359,3 +422,52 @@ downloadGpxBtn.addEventListener('click', () => {
   const blob = new Blob([gpx], { type: 'application/gpx+xml' });
   saveAs(blob, `${routeName}_pois.gpx`);
 });
+
+// Load preferences from localStorage
+function loadPreferences(): void {
+  const prefs = localStorage.getItem('gpx-tools-prefs');
+  if (prefs) {
+    try {
+      const parsed = JSON.parse(prefs);
+      if (parsed.enrich?.water !== undefined) poiWaterCheckbox.checked = parsed.enrich.water;
+      if (parsed.enrich?.camping !== undefined) poiCampingCheckbox.checked = parsed.enrich.camping;
+      if (parsed.enrich?.resupply !== undefined) poiResupplyCheckbox.checked = parsed.enrich.resupply;
+      if (parsed.enrich?.transport !== undefined) poiTransportCheckbox.checked = parsed.enrich.transport;
+      if (parsed.enrich?.emergency !== undefined) poiEmergencyCheckbox.checked = parsed.enrich.emergency;
+      if (parsed.enrich?.bufferKm) bufferKmInput.value = parsed.enrich.bufferKm;
+      if (parsed.enrich?.maxDistance) maxDistanceInput.value = parsed.enrich.maxDistance;
+    } catch {
+      // Ignore invalid stored prefs
+    }
+  }
+}
+
+function savePreferences(): void {
+  const existingPrefs = JSON.parse(localStorage.getItem('gpx-tools-prefs') || '{}');
+  existingPrefs.enrich = {
+    water: poiWaterCheckbox.checked,
+    camping: poiCampingCheckbox.checked,
+    resupply: poiResupplyCheckbox.checked,
+    transport: poiTransportCheckbox.checked,
+    emergency: poiEmergencyCheckbox.checked,
+    bufferKm: bufferKmInput.value,
+    maxDistance: maxDistanceInput.value,
+  };
+  localStorage.setItem('gpx-tools-prefs', JSON.stringify(existingPrefs));
+}
+
+// Save preferences on change
+[
+  poiWaterCheckbox,
+  poiCampingCheckbox,
+  poiResupplyCheckbox,
+  poiTransportCheckbox,
+  poiEmergencyCheckbox,
+  bufferKmInput,
+  maxDistanceInput,
+].forEach(input => {
+  input.addEventListener('change', savePreferences);
+});
+
+// Load preferences on startup
+loadPreferences();

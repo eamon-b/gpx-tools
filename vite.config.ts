@@ -6,6 +6,11 @@ export default defineConfig({
   base: './',
   publicDir: '../../public',
   plugins: [],
+  server: {
+    proxy: {
+      '/api': 'http://localhost:3000',
+    },
+  },
   build: {
     outDir: '../../dist',
     emptyOutDir: true,
