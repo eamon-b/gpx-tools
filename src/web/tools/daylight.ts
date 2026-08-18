@@ -1,5 +1,5 @@
 import { parseGpx } from '../../lib/gpx-parser.js';
-import { createDaylightPlan, exportDaylightPlanToCSV, formatTime, formatDaylightHours, getMoonInfo, type DaylightPlan } from '../../lib/daylight.js';
+import { createDaylightPlan, exportDaylightPlanToCSV, formatTime, formatDaylightHours, formatUtcOffset, shiftToUtcOffset, getMoonInfo, type DaylightPlan, type DaylightPlanDay } from '../../lib/daylight.js';
 import { saveAs } from 'file-saver';
 import L from 'leaflet';
 import { Chart, registerables } from 'chart.js';
@@ -38,8 +38,14 @@ let routePoints: MapPoint[] = [];
 let map: L.Map | null = null;
 let daylightChart: Chart | null = null;
 
-// Set default start date to today
-startDateInput.valueAsDate = new Date();
+// Set default start date to today (browser-local calendar day; using
+// valueAsDate would set the UTC day, which can be off by one)
+const today = new Date();
+startDateInput.value = [
+  today.getFullYear(),
+  String(today.getMonth() + 1).padStart(2, '0'),
+  String(today.getDate()).padStart(2, '0'),
+].join('-');
 
 // Utility functions
 function formatFileSize(bytes: number): string {
@@ -121,7 +127,11 @@ setupUploadArea(gpxUploadArea, gpxFileInput, gpxFileInfo, (file) => {
 calculateBtn.addEventListener('click', async () => {
   if (!gpxFile) return;
 
-  const startDate = startDateInput.valueAsDate;
+  // Read the date input as its string value ('YYYY-MM-DD'); the library
+  // interprets it as a calendar day in the route's local time zone.
+  // (valueAsDate would give UTC midnight, which shifts the calendar day
+  // when the browser's time zone differs from the route's.)
+  const startDate = startDateInput.value;
   if (!startDate) {
     alert('Please select a start date');
     return;
@@ -171,6 +181,13 @@ calculateBtn.addEventListener('click', async () => {
     // Display results
     results.removeAttribute('hidden');
 
+    // Label the (approximate) time zone all times are displayed in
+    const tzNote = document.getElementById('tz-note');
+    if (tzNote) {
+      tzNote.textContent = `Times shown in route local time (${formatUtcOffset(daylightPlan.utcOffsetHours)}, approx — estimated from route longitude)`;
+      tzNote.removeAttribute('hidden');
+    }
+
     totalDaysEl.textContent = daylightPlan.totalDays.toString();
     totalDistanceEl.textContent = `${daylightPlan.totalDistance.toFixed(1)} km`;
     nightHikingDaysEl.textContent = daylightPlan.nightHikingDays.toString();
@@ -191,17 +208,33 @@ calculateBtn.addEventListener('click', async () => {
   }
 });
 
+// Format a plan date in the route's local calendar (dates are anchored at
+// route-local noon, so shift by the offset and read UTC fields)
+function formatPlanDate(date: Date, utcOffsetHours: number): string {
+  return shiftToUtcOffset(date, utcOffsetHours).toLocaleDateString('en-US', {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    timeZone: 'UTC',
+  });
+}
+
+// Sunrise/sunset display, handling polar days/nights where the sun
+// never rises or sets
+function formatSunTime(day: DaylightPlanDay, which: 'sunrise' | 'sunset', utcOffsetHours: number): string {
+  if (day.polarDay) return which === 'sunrise' ? 'Sun up all day' : 'No sunset (polar day)';
+  if (day.polarNight) return which === 'sunrise' ? 'No sunrise (polar night)' : 'Sun down all day';
+  return formatTime(which === 'sunrise' ? day.sunrise : day.sunset, utcOffsetHours);
+}
+
 // Render day list
 function renderDayList(): void {
   if (!daylightPlan) return;
+  const offset = daylightPlan.utcOffsetHours;
 
   dayListEl.innerHTML = daylightPlan.days.map((day, i) => {
     const moon = getMoonInfo(day.date);
-    const dateStr = day.date.toLocaleDateString('en-US', {
-      weekday: 'short',
-      month: 'short',
-      day: 'numeric',
-    });
+    const dateStr = formatPlanDate(day.date, offset);
 
     return `
       <div class="day-item ${day.nightHikingRequired ? 'night-hiking' : ''}">
@@ -212,12 +245,16 @@ function renderDayList(): void {
         </div>
         <div class="day-details">
           <div class="day-stat">
+            <span class="day-stat-label">Distance (km)</span>
+            <span class="day-stat-value">${day.distanceKm.toFixed(1)}</span>
+          </div>
+          <div class="day-stat">
             <span class="day-stat-label">Sunrise</span>
-            <span class="day-stat-value">${formatTime(day.sunrise)}</span>
+            <span class="day-stat-value">${formatSunTime(day, 'sunrise', offset)}</span>
           </div>
           <div class="day-stat">
             <span class="day-stat-label">Sunset</span>
-            <span class="day-stat-value">${formatTime(day.sunset)}</span>
+            <span class="day-stat-value">${formatSunTime(day, 'sunset', offset)}</span>
           </div>
           <div class="day-stat">
             <span class="day-stat-label">Daylight</span>
@@ -273,8 +310,8 @@ function renderDaylightMap(points: MapPoint[], plan: DaylightPlan): void {
     );
     startMarker.bindPopup(`
       <strong>Day ${dayNum} Start</strong><br>
-      ${day.date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}<br>
-      Sunrise: ${formatTime(day.sunrise)}<br>
+      ${formatPlanDate(day.date, plan.utcOffsetHours)}<br>
+      Sunrise: ${formatSunTime(day, 'sunrise', plan.utcOffsetHours)}<br>
       Daylight: ${formatDaylightHours(day.daylightHours)}
       ${day.nightHikingRequired ? '<br><em style="color: #ef4444;">Night hiking required</em>' : ''}
     `);
@@ -375,3 +412,38 @@ function renderDaylightChart(plan: DaylightPlan): void {
     },
   });
 }
+
+// Load preferences from localStorage
+function loadPreferences(): void {
+  const prefs = localStorage.getItem('gpx-tools-prefs');
+  if (prefs) {
+    try {
+      const parsed = JSON.parse(prefs);
+      if (parsed.daylight?.dailyTarget) dailyTargetInput.value = parsed.daylight.dailyTarget;
+      if (parsed.daylight?.hikingSpeed) hikingSpeedInput.value = parsed.daylight.hikingSpeed;
+      if (parsed.daylight?.startOffset !== undefined) startOffsetInput.value = parsed.daylight.startOffset;
+      if (parsed.daylight?.endOffset !== undefined) endOffsetInput.value = parsed.daylight.endOffset;
+    } catch {
+      // Ignore invalid stored prefs
+    }
+  }
+}
+
+function savePreferences(): void {
+  const existingPrefs = JSON.parse(localStorage.getItem('gpx-tools-prefs') || '{}');
+  existingPrefs.daylight = {
+    dailyTarget: dailyTargetInput.value,
+    hikingSpeed: hikingSpeedInput.value,
+    startOffset: startOffsetInput.value,
+    endOffset: endOffsetInput.value,
+  };
+  localStorage.setItem('gpx-tools-prefs', JSON.stringify(existingPrefs));
+}
+
+// Save preferences on change
+[dailyTargetInput, hikingSpeedInput, startOffsetInput, endOffsetInput].forEach(input => {
+  input.addEventListener('change', savePreferences);
+});
+
+// Load preferences on startup
+loadPreferences();

@@ -41,6 +41,7 @@ const MI_TO_KM = 1.60934;
 /**
  * Convert elevation string to meters
  * Handles: "123m", "-45m", "369'", "+2084'", "100ft"
+ * Bare numbers without a unit (e.g., "1500") are returned as-is (assumed meters).
  */
 function convertElevation(elevStr: string | null | undefined): number {
   if (!elevStr) return 0;
@@ -53,7 +54,8 @@ function convertElevation(elevStr: string | null | undefined): number {
   }
 
   // Try feet with apostrophe (e.g., "369'", "+2084'", "-1739'")
-  const ftMatch = str.match(/([-+]?\d[\d,]*)'?$/);
+  // The apostrophe is required - bare numbers are NOT treated as feet
+  const ftMatch = str.match(/([-+]?\d[\d,]*(?:\.\d+)?)'$/);
   if (ftMatch) {
     const value = parseFloat(ftMatch[1].replace(/,/g, ''));
     return value * FT_TO_M;
@@ -63,6 +65,12 @@ function convertElevation(elevStr: string | null | undefined): number {
   const ftSuffixMatch = str.match(/([-\d.]+)\s*ft/i);
   if (ftSuffixMatch) {
     return parseFloat(ftSuffixMatch[1]) * FT_TO_M;
+  }
+
+  // Bare number with no unit - leave untouched (no conversion)
+  const bareMatch = str.match(/^[-+]?\d[\d,]*(?:\.\d+)?$/);
+  if (bareMatch) {
+    return parseFloat(str.replace(/[+,]/g, ''));
   }
 
   return 0;
@@ -166,6 +174,15 @@ export function processTravelPlan(
       totalDescent: Math.round(runningDescent * 10) / 10,
       notes: notes || '',
     });
+  }
+
+  // Validate that the CSV actually contained usable data rows. A non-Caltopo
+  // CSV would otherwise silently produce empty output.
+  if (processedRows.length === 0) {
+    throw new Error(
+      'No data rows found in CSV. Expected a Caltopo travel plan export: ' +
+      'two header rows followed by data rows (Location, Point, Coordinates, Elevation, Ascent, Descent, Distance, ...).'
+    );
   }
 
   // Create resupply points

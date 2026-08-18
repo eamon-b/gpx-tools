@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Daylight Calculator - GPX Tools</title>
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
+  <!-- Leaflet CSS is bundled via map-utils.ts (import 'leaflet/dist/leaflet.css') -->
   <link rel="stylesheet" href="../styles.css">
 </head>
 <body>
@@ -60,6 +60,7 @@
 
       <div class="results" id="results" hidden>
         <h3>Trip Summary</h3>
+        <p class="option-hint" id="tz-note" hidden></p>
         <div class="summary-stats">
           <div class="stat-card">
             <span class="stat-value" id="total-days"></span>
@@ -86,6 +87,13 @@
         <div class="map-section">
           <h4>Daily Progress</h4>
           <div id="daylight-map" class="map-container"></div>
+          <!-- Legend reuses existing circle-swatch classes for their colors:
+               camping = green, emergency = red, water = blue -->
+          <div class="map-legend">
+            <span class="legend-item camping">Day start</span>
+            <span class="legend-item emergency">Day start (night hiking required)</span>
+            <span class="legend-item water">Trip end</span>
+          </div>
         </div>
 
         <div class="chart-section">

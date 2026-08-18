@@ -159,7 +159,6 @@ export interface OptimizationOptions {
   // Privacy
   truncateStart: number;            // meters to remove from start (0 = disabled)
   truncateEnd: number;              // meters to remove from end (0 = disabled)
-  stripExtensions: boolean;         // remove proprietary extensions
 
   // Data retention
   preserveTimestamps: boolean;      // keep <time> elements (default: true)

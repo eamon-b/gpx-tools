@@ -7,6 +7,7 @@ const gpxFileInput = document.getElementById('gpx-file-input') as HTMLInputEleme
 const fileListContainer = document.getElementById('file-list-container')!;
 const sortableFileList = document.getElementById('sortable-file-list')!;
 const clearAllBtn = document.getElementById('clear-all-btn')!;
+const skipNotice = document.getElementById('skip-notice')!;
 const processBtn = document.getElementById('process-btn') as HTMLButtonElement;
 const results = document.getElementById('results')!;
 const stats = document.getElementById('stats')!;
@@ -29,12 +30,38 @@ interface FileEntry {
 
 let fileEntries: FileEntry[] = [];
 let combineResult: CombineResult | null = null;
+let outputFilename = 'combined.gpx';
 
 // Utility functions
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function escapeHtml(text: string): string {
+  return text.replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;',
+  }[c]!));
+}
+
+function computeOutputFilename(trackName: string): string {
+  const slug = trackName
+    .trim()
+    .replace(/[^a-z0-9]/gi, '-')
+    .toLowerCase()
+    .replace(/^-+|-+$/g, '');
+  return slug ? `${slug}.gpx` : 'combined.gpx';
+}
+
+function formatGapDistance(meters: number): string {
+  return meters >= 1000
+    ? `${(meters / 1000).toFixed(1)} km`
+    : `${meters.toLocaleString()} m`;
 }
 
 function updateUI(): void {
@@ -56,7 +83,7 @@ function renderFileList(): void {
   sortableFileList.innerHTML = fileEntries.map((entry, index) => `
     <li class="sortable-file-item" data-index="${index}" draggable="true">
       <span class="drag-handle">☰</span>
-      <span class="file-name">${entry.file.name}</span>
+      <span class="file-name">${escapeHtml(entry.file.name)}</span>
       <span class="file-size">${formatFileSize(entry.file.size)}</span>
       <button class="remove-file-btn" data-index="${index}" title="Remove">✕</button>
     </li>
@@ -87,6 +114,16 @@ function setupDragAndDrop(): void {
 
     item.addEventListener('dragend', () => {
       (item as HTMLElement).classList.remove('dragging');
+      // Commit the visual reorder to state here: dragend always fires (even
+      // when the item is released outside a list item), unlike drop, so the
+      // DOM order and fileEntries can never get out of sync.
+      const newOrder: FileEntry[] = [];
+      sortableFileList.querySelectorAll('.sortable-file-item').forEach(el => {
+        const index = parseInt((el as HTMLElement).dataset.index!);
+        newOrder.push(fileEntries[index]);
+      });
+      fileEntries = newOrder;
+      updateUI();
     });
 
     item.addEventListener('dragover', (e) => {
@@ -104,22 +141,18 @@ function setupDragAndDrop(): void {
     });
 
     item.addEventListener('drop', (e) => {
+      // Reordering is committed in dragend; just prevent default drop handling
       e.preventDefault();
-      // Reorder fileEntries based on new DOM order
-      const newOrder: FileEntry[] = [];
-      sortableFileList.querySelectorAll('.sortable-file-item').forEach(el => {
-        const index = parseInt((el as HTMLElement).dataset.index!);
-        newOrder.push(fileEntries[index]);
-      });
-      fileEntries = newOrder;
-      updateUI();
     });
   });
 }
 
 async function addFiles(files: FileList): Promise<void> {
+  const skipped: string[] = [];
+
   for (const file of Array.from(files)) {
     if (!file.name.toLowerCase().endsWith('.gpx')) {
+      skipped.push(file.name);
       continue;
     }
 
@@ -128,8 +161,17 @@ async function addFiles(files: FileList): Promise<void> {
       fileEntries.push({ file, content });
     } catch (error) {
       console.error(`Error reading ${file.name}:`, error);
+      skipped.push(file.name);
     }
   }
+
+  if (skipped.length > 0) {
+    skipNotice.textContent = `Skipped ${skipped.length} file${skipped.length === 1 ? '' : 's'} (not readable GPX): ${skipped.join(', ')}`;
+    skipNotice.hidden = false;
+  } else {
+    skipNotice.hidden = true;
+  }
+
   updateUI();
 }
 
@@ -165,6 +207,7 @@ gpxFileInput.addEventListener('change', () => {
 
 clearAllBtn.addEventListener('click', () => {
   fileEntries = [];
+  skipNotice.hidden = true;
   updateUI();
 });
 
@@ -188,29 +231,41 @@ processBtn.addEventListener('click', async () => {
     // Show results
     results.hidden = false;
 
+    // segmentOrder holds file indices (waypoint-only files contribute no
+    // segment, so they simply never appear); map positions back to filenames.
+    const orderedNames = combineResult.segmentOrder.map(fileIndex =>
+      fileEntries[fileIndex]?.file.name ?? `file ${fileIndex + 1}`
+    );
+
+    const reorderNote = combineResult.wasReordered
+      ? `<p><strong>Note:</strong> Files were reordered for better continuity: ${orderedNames.map(escapeHtml).join(' → ')}</p>`
+      : '';
+
     stats.innerHTML = `
       <p><strong>Files combined:</strong> ${combineResult.fileCount}</p>
       <p><strong>Total points:</strong> ${combineResult.pointCount.toLocaleString()}</p>
       <p><strong>Waypoints:</strong> ${combineResult.waypointCount}</p>
-      ${combineResult.wasReordered ? '<p><strong>Note:</strong> Files were reordered for better continuity</p>' : ''}
+      ${reorderNote}
     `;
 
-    // Show warnings for gaps
+    // Show warnings for gaps, named by the files on either side of each gap
     if (combineResult.gaps.length > 0) {
       warnings.hidden = false;
       warnings.innerHTML = `
         <h4>Gap Warnings</h4>
         <ul>
-          ${combineResult.gaps.map(gap => `
-            <li>Gap of ${gap.distanceMeters.toLocaleString()}m after segment ${gap.afterSegmentIndex + 1}</li>
-          `).join('')}
+          ${combineResult.gaps.map(gap => {
+            const fromName = orderedNames[gap.afterSegmentIndex] ?? `segment ${gap.afterSegmentIndex + 1}`;
+            const toName = orderedNames[gap.afterSegmentIndex + 1] ?? `segment ${gap.afterSegmentIndex + 2}`;
+            return `<li>Gap of ${formatGapDistance(gap.distanceMeters)} between ${escapeHtml(fromName)} and ${escapeHtml(toName)}</li>`;
+          }).join('')}
         </ul>
       `;
     } else {
       warnings.hidden = true;
     }
 
-    const outputFilename = 'combined.gpx';
+    outputFilename = computeOutputFilename(trackNameInput.value);
     resultFilename.textContent = outputFilename;
     resultMeta.textContent = `${combineResult.pointCount.toLocaleString()} points, ${combineResult.waypointCount} waypoints`;
 
@@ -227,10 +282,8 @@ downloadBtn.addEventListener('click', () => {
   if (!combineResult) return;
 
   const blob = new Blob([combineResult.content], { type: 'application/gpx+xml' });
-  const filename = trackNameInput.value
-    ? `${trackNameInput.value.replace(/[^a-z0-9]/gi, '-').toLowerCase()}.gpx`
-    : 'combined.gpx';
-  saveAs(blob, filename);
+  // Same filename that was shown in the results panel
+  saveAs(blob, outputFilename);
 });
 
 // Load preferences from localStorage

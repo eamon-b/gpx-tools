@@ -70,7 +70,7 @@
           </select>
         </div>
         <div class="option-row">
-          <label for="csv-delimiter">CSV delimiter:</label>
+          <label for="csv-delimiter">Output CSV delimiter:</label>
           <select id="csv-delimiter">
             <option value=",">Comma (,)</option>
             <option value=";">Semicolon (;)</option>
@@ -80,6 +80,8 @@
       </div>
 
       <button class="process-btn" id="csv-process-btn" disabled>Process Travel Plan</button>
+
+      <div class="warnings" id="csv-error" hidden></div>
 
       <div class="results" id="csv-results" hidden>
         <h3>Results</h3>

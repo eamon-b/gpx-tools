@@ -5,13 +5,18 @@
  */
 
 import L from 'leaflet';
+import 'leaflet/dist/leaflet.css';
+import markerIconUrl from 'leaflet/dist/images/marker-icon.png';
+import markerIconRetinaUrl from 'leaflet/dist/images/marker-icon-2x.png';
+import markerShadowUrl from 'leaflet/dist/images/marker-shadow.png';
 
-// Fix for default marker icons in Vite/webpack builds
-// Use CDN URLs to avoid build issues
+// Fix for default marker icons in Vite builds: Leaflet's CSS references the
+// marker images relative to its own stylesheet, which breaks when bundled.
+// Import them as Vite assets so they are bundled and work offline (no CDN).
 L.Icon.Default.mergeOptions({
-  iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
-  iconRetinaUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png',
-  shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
+  iconUrl: markerIconUrl,
+  iconRetinaUrl: markerIconRetinaUrl,
+  shadowUrl: markerShadowUrl,
 });
 
 export interface MapPoint {

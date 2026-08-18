@@ -1,6 +1,6 @@
 import Papa from 'papaparse';
 import { parseGpx } from './gpx-parser';
-import { haversineDistance3D, waypointToPointDistance } from './distance';
+import { haversineDistance3D, haversineDistance2D } from './distance';
 import type {
   GpxPoint,
   GpxWaypoint,
@@ -71,6 +71,10 @@ function hasResupplyKeyword(text: string | null | undefined, keywords: string[])
  * Uses hysteresis to prevent "flickering" - the exit threshold is larger than
  * the entry threshold, so the track must move significantly away before a new
  * visit can be recorded for the same waypoint.
+ *
+ * Proximity is measured in 2D (horizontal distance only): waypoints often lack
+ * elevation data (parsed as ele=0), and 3D distance would prevent them from
+ * ever matching a track at elevation.
  */
 export function findWaypointVisits(
   waypoints: GpxWaypoint[],
@@ -98,7 +102,10 @@ export function findWaypointVisits(
     // Check each waypoint
     for (let wpIdx = 0; wpIdx < waypoints.length; wpIdx++) {
       const waypoint = waypoints[wpIdx];
-      const distance = waypointToPointDistance(waypoint, trackPoint);
+      const distance = haversineDistance2D(
+        waypoint.lat, waypoint.lon,
+        trackPoint.lat, trackPoint.lon
+      );
 
       const existing = activeProximity.get(wpIdx);
 
@@ -206,13 +213,16 @@ function processSingleTrack(
   waypoints: GpxWaypoint[],
   opts: GpxProcessOptions,
   trackName?: string
-): { processedRows: ProcessedRow[]; resupplyRows: ResupplyRow[] } | null {
+): { processedRows: ProcessedRow[]; resupplyRows: ResupplyRow[]; matchedWaypoints: Set<GpxWaypoint> } | null {
   if (trackPoints.length === 0) {
     return null;
   }
 
   // Find all waypoint visits along this track
   const visits = findWaypointVisits(waypoints, trackPoints, opts.waypointMaxDistance);
+
+  // Track which waypoints matched this track (unique waypoints, not visits)
+  const matchedWaypoints = new Set<GpxWaypoint>(visits.map(v => v.waypoint));
 
   const lastTrackIndex = trackPoints.length - 1;
 
@@ -331,7 +341,20 @@ function processSingleTrack(
     }
   }
 
-  return { processedRows, resupplyRows };
+  return { processedRows, resupplyRows, matchedWaypoints };
+}
+
+/**
+ * Result of processing a GPX travel plan.
+ * Extends the shared ProcessResult with waypoint matching statistics.
+ */
+export interface GpxProcessResult extends ProcessResult {
+  stats: ProcessResult['stats'] & {
+    /** Number of unique waypoints matched to at least one track */
+    matchedWaypoints: number;
+    /** Total number of waypoints in the GPX file */
+    totalWaypoints: number;
+  };
 }
 
 /**
@@ -350,7 +373,7 @@ function processSingleTrack(
 export function processGpxTravelPlan(
   gpxContent: string,
   options: Partial<GpxProcessOptions> = {}
-): ProcessResult {
+): GpxProcessResult {
   const opts = { ...DEFAULT_GPX_OPTIONS, ...options };
 
   // Parse GPX
@@ -396,6 +419,7 @@ export function processGpxTravelPlan(
   // Process each track separately
   const allProcessedRows: ProcessedRow[] = [];
   const allResupplyRows: ResupplyRow[] = [];
+  const allMatchedWaypoints = new Set<GpxWaypoint>();
   const trackResults: Array<{ name: string; processedRows: ProcessedRow[]; resupplyRows: ResupplyRow[] }> = [];
 
   for (const trackData of tracksToProcess) {
@@ -408,6 +432,7 @@ export function processGpxTravelPlan(
       });
       allProcessedRows.push(...result.processedRows);
       allResupplyRows.push(...result.resupplyRows);
+      result.matchedWaypoints.forEach(wpt => allMatchedWaypoints.add(wpt));
     }
   }
 
@@ -507,6 +532,8 @@ export function processGpxTravelPlan(
       totalDistance: Math.round(totalDistance * 100) / 100,
       totalAscent: Math.round(totalAscent),
       totalDescent: Math.round(totalDescent),
+      matchedWaypoints: allMatchedWaypoints.size,
+      totalWaypoints: gpxData.waypoints.length,
     },
   };
 }
