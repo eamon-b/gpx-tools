@@ -1,5 +1,5 @@
 import { defineConfig } from 'vite';
-import { resolve } from 'path';
+import { resolve } from 'node:path';
 
 export default defineConfig({
   root: 'src/web',
@@ -14,23 +14,23 @@ export default defineConfig({
   build: {
     outDir: '../../dist',
     emptyOutDir: true,
-    rollupOptions: {
+    rolldownOptions: {
       input: {
-        main: resolve(__dirname, 'src/web/index.html'),
-        tools: resolve(__dirname, 'src/web/tools/index.html'),
-        splitter: resolve(__dirname, 'src/web/tools/splitter.html'),
-        planner: resolve(__dirname, 'src/web/tools/planner.html'),
-        enrich: resolve(__dirname, 'src/web/tools/enrich.html'),
-        compare: resolve(__dirname, 'src/web/tools/compare.html'),
-        daylight: resolve(__dirname, 'src/web/tools/daylight.html'),
-        combiner: resolve(__dirname, 'src/web/tools/combiner.html'),
-        optimizer: resolve(__dirname, 'src/web/tools/optimizer.html'),
+        main: resolve(import.meta.dirname, 'src/web/index.html'),
+        tools: resolve(import.meta.dirname, 'src/web/tools/index.html'),
+        splitter: resolve(import.meta.dirname, 'src/web/tools/splitter.html'),
+        planner: resolve(import.meta.dirname, 'src/web/tools/planner.html'),
+        enrich: resolve(import.meta.dirname, 'src/web/tools/enrich.html'),
+        compare: resolve(import.meta.dirname, 'src/web/tools/compare.html'),
+        daylight: resolve(import.meta.dirname, 'src/web/tools/daylight.html'),
+        combiner: resolve(import.meta.dirname, 'src/web/tools/combiner.html'),
+        optimizer: resolve(import.meta.dirname, 'src/web/tools/optimizer.html'),
       },
     },
   },
   resolve: {
     alias: {
-      '@lib': resolve(__dirname, 'src/lib'),
+      '@lib': resolve(import.meta.dirname, 'src/lib'),
     },
   },
 });
