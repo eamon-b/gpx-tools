@@ -1,7 +1,16 @@
-import { createHash } from 'crypto';
-import { getCorsHeaders } from './_cors';
-import { logError } from './_logger';
-import { createRedisClient } from './_redis';
+import { createHash } from "crypto";
+import { getCorsHeaders } from "./_cors";
+import { logError, logInfo } from "./_logger";
+import { createRedisClient } from "./_redis";
+import {
+  POI_TYPES,
+  buildOverpassQuery,
+  parseOverpassArea,
+  roundCoord,
+  validateOverpassArea,
+  type OverpassArea,
+  type POIType,
+} from "../lib/osm-poi";
 
 // Cache entries are raw JSON strings that we hand straight back as the response
 // body, so disable automatic (de)serialization to keep them byte-for-byte on
@@ -9,86 +18,124 @@ import { createRedisClient } from './_redis';
 // default, which would turn the cached payload back into an object.)
 const redis = createRedisClient({ automaticDeserialization: false });
 
-interface OverpassRequest {
-  bounds: {
-    south: number;
-    north: number;
-    west: number;
-    east: number;
-  };
-  types: ('water' | 'camping' | 'resupply' | 'transport' | 'emergency')[];
-}
-
 interface RateLimitResult {
   allowed: boolean;
   remaining: number;
   resetIn: number;
 }
 
-const OVERPASS_ENDPOINT = 'https://overpass-api.de/api/interpreter';
-const RATE_LIMIT = parseInt(process.env.RATE_LIMIT_PER_MINUTE || '10');
-const CACHE_TTL = parseInt(process.env.CACHE_TTL_SECONDS || '604800'); // 7 days
+const OVERPASS_ENDPOINT = "https://overpass-api.de/api/interpreter";
+const RATE_LIMIT = parseInt(process.env.RATE_LIMIT_PER_MINUTE || "10");
+const CACHE_TTL = parseInt(process.env.CACHE_TTL_SECONDS || "604800"); // 7 days
 
-// OSM tag mappings for each POI type
-const TYPE_QUERIES: Record<string, string> = {
-  water: `
-    node["amenity"="drinking_water"]({{bbox}});
-    node["natural"="spring"]({{bbox}});
-    node["man_made"="water_tap"]({{bbox}});
-    way["natural"="water"]["name"]({{bbox}});
-  `,
-  camping: `
-    node["tourism"="camp_site"]({{bbox}});
-    node["tourism"="alpine_hut"]({{bbox}});
-    node["tourism"="wilderness_hut"]({{bbox}});
-    node["amenity"="shelter"]({{bbox}});
-  `,
-  resupply: `
-    node["shop"="supermarket"]({{bbox}});
-    node["shop"="convenience"]({{bbox}});
-    node["shop"="general"]({{bbox}});
-    node["amenity"="cafe"]({{bbox}});
-    node["amenity"="restaurant"]({{bbox}});
-  `,
-  transport: `
-    node["highway"="bus_stop"]({{bbox}});
-    node["railway"="station"]({{bbox}});
-    node["railway"="halt"]({{bbox}});
-  `,
-  emergency: `
-    node["amenity"="hospital"]({{bbox}});
-    node["amenity"="pharmacy"]({{bbox}});
-    node["amenity"="police"]({{bbox}});
-  `,
-};
+// vercel.json gives this function maxDuration 30. Overpass gets 22 s to run the
+// query and the HTTP call is aborted at 27 s, which leaves room to still emit a
+// structured 503 before the platform kills the invocation.
+const OVERPASS_TIMEOUT_SECONDS = 22;
+const FETCH_TIMEOUT_MS = 27000;
 
-function buildOverpassQuery(bounds: OverpassRequest['bounds'], types: string[]): string {
-  const bbox = `${bounds.south},${bounds.west},${bounds.north},${bounds.east}`;
-  const typeQueries = types
-    .map(t => TYPE_QUERIES[t] || '')
-    .join('\n')
-    .replace(/\{\{bbox\}\}/g, bbox);
+// Upstash rejects values above 1 MB; stay under it with room for encoding
+// overhead rather than failing the request on an unusually dense area.
+const MAX_CACHE_BYTES = 900 * 1024;
 
-  return `
-    [out:json][timeout:25];
-    (
-      ${typeQueries}
-    );
-    out center;
-  `;
+const DEFAULT_RETRY_AFTER_SECONDS = 30;
+const MAX_RETRY_AFTER_SECONDS = 3600;
+
+function jsonResponse(
+  body: unknown,
+  status: number,
+  headers: Record<string, string>
+): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { ...headers, "Content-Type": "application/json" },
+  });
 }
 
-function hashRequest(req: OverpassRequest): string {
-  const normalized = JSON.stringify({
+/**
+ * Every coordinate rounded to the shared ~11 m grid, so that the cache key and
+ * the query text are derived from exactly the same numbers. Two requests whose
+ * corridors differ only below that precision therefore share a cache entry.
+ */
+function canonicalizeArea(area: OverpassArea): OverpassArea {
+  if ("corridor" in area) {
+    return {
+      corridor: area.corridor.map((p) => ({
+        lat: roundCoord(p.lat),
+        lon: roundCoord(p.lon),
+      })),
+      radiusMeters: Math.round(area.radiusMeters),
+    };
+  }
+  return {
     bounds: {
-      south: Math.round(req.bounds.south * 100) / 100,
-      north: Math.round(req.bounds.north * 100) / 100,
-      west: Math.round(req.bounds.west * 100) / 100,
-      east: Math.round(req.bounds.east * 100) / 100,
+      south: roundCoord(area.bounds.south),
+      north: roundCoord(area.bounds.north),
+      west: roundCoord(area.bounds.west),
+      east: roundCoord(area.bounds.east),
     },
-    types: [...req.types].sort(),
-  });
-  return createHash('sha256').update(normalized).digest('hex').slice(0, 16);
+  };
+}
+
+/** Reject anything that is not a non-empty array of known POI types. */
+function validateTypes(value: unknown): string | null {
+  if (!Array.isArray(value) || value.length === 0) {
+    return `types must be a non-empty array. Known types: ${POI_TYPES.join(", ")}`;
+  }
+  for (const type of value) {
+    if (typeof type !== "string" || !POI_TYPES.includes(type as POIType)) {
+      return `Unknown POI type: ${JSON.stringify(type)}. Known types: ${POI_TYPES.join(", ")}`;
+    }
+  }
+  return null;
+}
+
+/** sha256 over the canonical (rounded) area plus the deduped, sorted types. */
+function hashRequest(area: OverpassArea, types: POIType[]): string {
+  const canonical = JSON.stringify({ area, types });
+  return createHash("sha256").update(canonical).digest("hex").slice(0, 32);
+}
+
+/**
+ * Overpass sends `Retry-After` as either a delta in seconds or an HTTP date.
+ * Anything we cannot make sense of falls back to a sane fixed delay.
+ */
+function parseRetryAfter(header: string | null): number {
+  const clamp = (n: number) =>
+    Math.min(Math.max(Math.ceil(n), 1), MAX_RETRY_AFTER_SECONDS);
+
+  if (!header) {
+    return DEFAULT_RETRY_AFTER_SECONDS;
+  }
+  const seconds = Number(header.trim());
+  if (Number.isFinite(seconds) && seconds > 0) {
+    return clamp(seconds);
+  }
+  const timestamp = Date.parse(header);
+  if (!Number.isNaN(timestamp)) {
+    const delta = (timestamp - Date.now()) / 1000;
+    if (delta > 0) {
+      return clamp(delta);
+    }
+  }
+  return DEFAULT_RETRY_AFTER_SECONDS;
+}
+
+/**
+ * Redis is a cache and a courtesy limiter, not a dependency: if it is
+ * unreachable we log and carry on (fail-open) rather than failing a request the
+ * user could otherwise have served from Overpass.
+ */
+async function bestEffort<T>(
+  context: string,
+  operation: () => Promise<T>
+): Promise<{ ok: true; value: T } | { ok: false }> {
+  try {
+    return { ok: true, value: await operation() };
+  } catch (error) {
+    logError(context, error);
+    return { ok: false };
+  }
 }
 
 async function checkRateLimit(ip: string): Promise<RateLimitResult> {
@@ -116,117 +163,197 @@ export default async function handler(req: Request): Promise<Response> {
   const corsHeaders = getCorsHeaders(req);
 
   // Handle CORS preflight
-  if (req.method === 'OPTIONS') {
+  if (req.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: corsHeaders });
   }
 
-  if (req.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
-      status: 405,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-    });
+  if (req.method !== "POST") {
+    return jsonResponse({ error: "Method not allowed" }, 405, corsHeaders);
   }
 
+  // Set when any Redis call fails, so the response can say the cache was
+  // bypassed instead of claiming a MISS that will never become a HIT.
+  let redisDegraded = false;
+
   try {
-    // Rate limiting
-    const ip = req.headers.get('x-forwarded-for')?.split(',')[0] || 'unknown';
-    const rateLimit = await checkRateLimit(ip);
+    // Rate limiting (fail-open: a Redis outage must not lock everyone out)
+    const ip = req.headers.get("x-forwarded-for")?.split(",")[0] || "unknown";
+    const limit = await bestEffort("overpass:ratelimit", () =>
+      checkRateLimit(ip)
+    );
+    if (!limit.ok) {
+      redisDegraded = true;
+    }
+    const rateLimit: RateLimitResult = limit.ok
+      ? limit.value
+      : { allowed: true, remaining: RATE_LIMIT, resetIn: 60 };
 
     if (!rateLimit.allowed) {
-      return new Response(JSON.stringify({
-        error: 'Rate limit exceeded',
-        resetIn: rateLimit.resetIn,
-      }), {
-        status: 429,
-        headers: {
+      return jsonResponse(
+        { error: "Rate limit exceeded", resetIn: rateLimit.resetIn },
+        429,
+        {
           ...corsHeaders,
-          'Content-Type': 'application/json',
-          'X-RateLimit-Remaining': '0',
-          'X-RateLimit-Reset': rateLimit.resetIn.toString(),
-        },
-      });
+          "X-RateLimit-Remaining": "0",
+          "X-RateLimit-Reset": rateLimit.resetIn.toString(),
+          "Retry-After": rateLimit.resetIn.toString(),
+        }
+      );
     }
 
     // Parse request
-    const body: OverpassRequest = await req.json();
-
-    // Validate bounds
-    if (!body.bounds || !body.types?.length) {
-      return new Response(JSON.stringify({ error: 'Invalid request' }), {
-        status: 400,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
+    let body: unknown;
+    try {
+      body = await req.json();
+    } catch {
+      return jsonResponse({ error: "Invalid JSON body" }, 400, corsHeaders);
     }
 
-    // Limit bounding box size (prevent abuse and Overpass timeouts)
-    // Client should use splitBounds() for larger areas - see api-client.ts
-    const latSpan = body.bounds.north - body.bounds.south;
-    const lonSpan = body.bounds.east - body.bounds.west;
-    const MAX_DEGREES = 1.5; // Aligned with client-side splitBounds()
-    if (latSpan > MAX_DEGREES || lonSpan > MAX_DEGREES) {
-      return new Response(JSON.stringify({
-        error: `Bounding box too large. Maximum ${MAX_DEGREES} degrees per side. Use chunked requests for larger areas.`,
-      }), {
-        status: 400,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
+    // Validate the area (corridor or bbox) and the requested POI types
+    const areaError = validateOverpassArea(body);
+    if (areaError) {
+      return jsonResponse({ error: areaError }, 400, corsHeaders);
+    }
+    const typesError = validateTypes((body as { types?: unknown }).types);
+    if (typesError) {
+      return jsonResponse({ error: typesError }, 400, corsHeaders);
     }
 
-    // Check cache
-    const cacheKey = `overpass:${hashRequest(body)}`;
-    const cached = await redis.get<string>(cacheKey);
+    const parsed = parseOverpassArea(body);
+    if (!parsed) {
+      return jsonResponse(
+        {
+          error:
+            "Could not parse area. Expected {corridor, radiusMeters} or {bounds}.",
+        },
+        400,
+        corsHeaders
+      );
+    }
 
-    if (cached) {
+    // Canonical form drives BOTH the cache key and the query text.
+    const area = canonicalizeArea(parsed);
+    const types: POIType[] = [
+      ...new Set((body as { types: POIType[] }).types),
+    ].sort();
+
+    const cacheKey = `overpass:${hashRequest(area, types)}`;
+    const cacheRead = await bestEffort("overpass:cache-get", () =>
+      redis.get<string>(cacheKey)
+    );
+    if (!cacheRead.ok) {
+      redisDegraded = true;
+    }
+    const cached = cacheRead.ok ? cacheRead.value : null;
+
+    if (typeof cached === "string" && cached.length > 0) {
       return new Response(cached, {
         headers: {
           ...corsHeaders,
-          'Content-Type': 'application/json',
-          'X-Cache': 'HIT',
-          'X-RateLimit-Remaining': rateLimit.remaining.toString(),
+          "Content-Type": "application/json",
+          "X-Cache": "HIT",
+          "X-RateLimit-Remaining": rateLimit.remaining.toString(),
         },
       });
     }
 
     // Build and execute query
-    const query = buildOverpassQuery(body.bounds, body.types);
-    const overpassResponse = await fetch(OVERPASS_ENDPOINT, {
-      method: 'POST',
-      body: `data=${encodeURIComponent(query)}`,
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      signal: AbortSignal.timeout(20000), // 20 second timeout (Overpass can be slow)
+    const query = buildOverpassQuery(area, types, {
+      timeoutSeconds: OVERPASS_TIMEOUT_SECONDS,
     });
 
-    if (!overpassResponse.ok) {
-      const errorText = await overpassResponse.text();
-      logError('overpass:api', errorText, { status: overpassResponse.status });
-      return new Response(JSON.stringify({
-        error: 'Overpass API error',
-        status: overpassResponse.status,
-      }), {
-        status: 502,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    let overpassResponse: Response;
+    try {
+      overpassResponse = await fetch(OVERPASS_ENDPOINT, {
+        method: "POST",
+        body: `data=${encodeURIComponent(query)}`,
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
       });
+    } catch (error) {
+      const aborted =
+        error instanceof Error &&
+        (error.name === "TimeoutError" || error.name === "AbortError");
+      logError("overpass:fetch", error, { aborted });
+      if (aborted) {
+        // A timeout is a "come back later", not a permanent failure.
+        return jsonResponse(
+          {
+            error: "Overpass API timed out",
+            retryAfter: DEFAULT_RETRY_AFTER_SECONDS,
+            resetIn: DEFAULT_RETRY_AFTER_SECONDS,
+          },
+          503,
+          {
+            ...corsHeaders,
+            "Retry-After": String(DEFAULT_RETRY_AFTER_SECONDS),
+          }
+        );
+      }
+      return jsonResponse(
+        { error: "Overpass API unreachable" },
+        502,
+        corsHeaders
+      );
+    }
+
+    if (!overpassResponse.ok) {
+      const errorText = await overpassResponse.text().catch(() => "");
+      logError("overpass:api", errorText, { status: overpassResponse.status });
+
+      // 429 (slot/quota exhausted) and 504 (gateway timeout) are transient:
+      // tell the client to retry rather than reporting a hard upstream error.
+      if (overpassResponse.status === 429 || overpassResponse.status === 504) {
+        const retryAfter = parseRetryAfter(
+          overpassResponse.headers.get("retry-after")
+        );
+        return jsonResponse(
+          {
+            error: "Overpass API is busy. Please retry shortly.",
+            status: overpassResponse.status,
+            retryAfter,
+            // `resetIn` is what the client's backoff reads.
+            resetIn: retryAfter,
+          },
+          503,
+          { ...corsHeaders, "Retry-After": String(retryAfter) }
+        );
+      }
+
+      return jsonResponse(
+        { error: "Overpass API error", status: overpassResponse.status },
+        502,
+        corsHeaders
+      );
     }
 
     const data = await overpassResponse.text();
 
-    // Cache response
-    await redis.set(cacheKey, data, { ex: CACHE_TTL });
+    // Cache response (best effort; an oversize payload is simply not cached)
+    if (Buffer.byteLength(data, "utf8") <= MAX_CACHE_BYTES) {
+      const written = await bestEffort("overpass:cache-set", () =>
+        redis.set(cacheKey, data, { ex: CACHE_TTL })
+      );
+      if (!written.ok) {
+        redisDegraded = true;
+      }
+    } else {
+      logInfo("overpass:cache-skip", "Payload too large to cache", {
+        bytes: Buffer.byteLength(data, "utf8"),
+        limit: MAX_CACHE_BYTES,
+      });
+    }
 
     return new Response(data, {
       headers: {
         ...corsHeaders,
-        'Content-Type': 'application/json',
-        'X-Cache': 'MISS',
-        'X-RateLimit-Remaining': rateLimit.remaining.toString(),
+        "Content-Type": "application/json",
+        "X-Cache": redisDegraded ? "BYPASS" : "MISS",
+        "X-RateLimit-Remaining": rateLimit.remaining.toString(),
       },
     });
-
   } catch (error) {
-    logError('overpass:handler', error);
-    return new Response(JSON.stringify({ error: 'Internal server error' }), {
-      status: 500,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-    });
+    logError("overpass:handler", error);
+    return jsonResponse({ error: "Internal server error" }, 500, corsHeaders);
   }
 }
