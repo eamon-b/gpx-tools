@@ -1259,3 +1259,70 @@ footer a:hover {
     justify-content: center;
   }
 }
+
+/* POI enrichment: cancel button, cancelled progress state, list <-> map linking */
+.cancel-btn {
+  width: 100%;
+  padding: 0.75rem;
+  margin-top: 0.5rem;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 0.9375rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.2s;
+}
+
+.cancel-btn:hover:not(:disabled) {
+  border-color: var(--text-muted);
+}
+
+.cancel-btn:disabled {
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
+.progress-fill.cancelled {
+  background: var(--text-muted);
+}
+
+.progress-text.cancelled {
+  font-style: italic;
+}
+
+/* Clicking a POI row pans the map to it */
+.poi-item {
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.poi-item:hover {
+  border-color: var(--border);
+}
+
+.poi-item.highlighted {
+  border-color: var(--primary);
+  background: rgba(37, 99, 235, 0.08);
+}
+
+/* Paged POI list */
+.show-more-btn {
+  display: block;
+  width: 100%;
+  padding: 0.625rem;
+  margin-top: 0.25rem;
+  background: var(--surface);
+  color: var(--primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.show-more-btn:hover {
+  border-color: var(--primary);
+}

@@ -1,27 +1,71 @@
 /**
- * POI Enrichment Module
+ * POI Enrichment
  *
- * Provides utilities for enriching GPX routes with Points of Interest (POIs)
- * from OpenStreetMap via the Overpass API.
+ * Ties the OSM catalog, the corridor query builder and the route geometry
+ * together: given a route, fetch the OpenStreetMap POIs that sit within a
+ * search radius of it and annotate each one with where along the route it is.
  */
 
-import { apiClient, getBoundsFromPoints, splitBounds, type POI, type POIRequest } from './api-client.js';
-import { haversineDistance } from './distance.js';
+import { proxyPOIFetcher } from "./api-client.js";
+import {
+  CORRIDOR_LIMITS,
+  buildCorridorChunks,
+  buildRouteGeometry,
+  categorizePOI,
+  computeCumulativeDistances,
+  escapeXml,
+  getPOIDescription,
+  getPOIName,
+  nearestPointOnRoute,
+  poiKey,
+  POI_TYPES,
+  type LatLon,
+  type POI,
+  type POIType,
+} from "./osm-poi.js";
+import type { POIFetcher } from "./overpass-client.js";
 
-export type POIType = 'water' | 'camping' | 'resupply' | 'transport' | 'emergency';
+export { computeCumulativeDistances, getPOIName, getPOIDescription };
+export type { POIType, POI, LatLon };
 
 export interface EnrichmentOptions {
   types: POIType[];
+  /** POIs within this distance of the route are returned. Default 2 km. */
+  searchRadiusKm?: number;
+  /** @deprecated alias for `searchRadiusKm` */
+  maxDistanceFromRoute?: number;
+  /** @deprecated ignored — corridor queries do not need a bbox buffer */
   bufferKm?: number;
-  maxDistanceFromRoute?: number; // in km
+  /** Where POIs come from. Defaults to the /api/overpass proxy. */
+  fetchPOIs?: POIFetcher;
+  /** Cancellation. `enrichRoute` rejects with an Error named 'AbortError'. */
+  signal?: AbortSignal;
+  /** Max corridor vertices per Overpass query. Default 300. */
+  maxVerticesPerChunk?: number;
+}
+
+export type EnrichmentStage = "prepare" | "fetch" | "process" | "done";
+
+export interface EnrichmentProgress {
+  stage: EnrichmentStage;
+  /** 1-based position within the stage, when the stage has discrete steps. */
+  current?: number;
+  total?: number;
+  message: string;
 }
 
 export interface EnrichedPOI extends POI {
-  distanceFromRoute: number;
-  nearestPointIndex: number;
-  /** Cumulative distance along the route (km) at the nearest route point */
-  distanceAlongRoute: number;
   category: POIType;
+  /** Cross-track distance from the route, km. */
+  distanceFromRoute: number;
+  /** Distance along the route at the closest point, km. */
+  distanceAlongRoute: number;
+  /** Nearer endpoint of the closest segment, indexing the flattened route. */
+  nearestPointIndex: number;
+  /** Index of the closest segment (segmentIndex, segmentIndex + 1). */
+  segmentIndex: number;
+  /** Position along that segment, 0..1. Lets consumers interpolate their own scales. */
+  t: number;
 }
 
 export interface ChunkFailure {
@@ -32,7 +76,7 @@ export interface ChunkFailure {
 export interface EnrichmentResult {
   pois: EnrichedPOI[];
   byType: Record<POIType, EnrichedPOI[]>;
-  /** Chunks that failed to fetch (after retries). Empty when everything succeeded. */
+  /** Corridor chunks that failed to fetch. Empty when everything succeeded. */
   failedChunks: ChunkFailure[];
   stats: {
     totalFound: number;
@@ -43,349 +87,186 @@ export interface EnrichmentResult {
   };
 }
 
+const DEFAULT_SEARCH_RADIUS_KM = 2;
+
 /**
- * Compute the cumulative distance (in km) along the route at each point.
- * cumulative[0] is 0; cumulative[i] is the route distance from the start to point i.
+ * Corridor simplification (Douglas-Peucker at radius/4) can shift the queried
+ * polyline away from the real track by up to a quarter of the radius, so the
+ * Overpass `around:` radius is padded to keep recall exact. The precise
+ * distance filter runs against the full-resolution route afterwards, so
+ * over-fetching only costs a little bandwidth.
  */
-export function computeCumulativeDistances(
-  routePoints: { lat: number; lon: number }[]
-): number[] {
-  if (routePoints.length === 0) {
-    return [];
-  }
-  const cumulative = new Array<number>(routePoints.length);
-  let total = 0;
-  cumulative[0] = 0;
-  for (let i = 1; i < routePoints.length; i++) {
-    // haversineDistance returns meters, convert to km
-    total += haversineDistance(
-      routePoints[i - 1].lat,
-      routePoints[i - 1].lon,
-      routePoints[i].lat,
-      routePoints[i].lon
-    ) / 1000;
-    cumulative[i] = total;
-  }
-  return cumulative;
+const QUERY_RADIUS_MARGIN = 1.25;
+
+function abortError(): Error {
+  const error = new Error("Enrichment aborted");
+  error.name = "AbortError";
+  return error;
+}
+
+function emptyByType<T>(make: () => T): Record<POIType, T> {
+  return {
+    water: make(),
+    camping: make(),
+    resupply: make(),
+    transport: make(),
+    emergency: make(),
+  };
 }
 
 /**
- * Select a subset of route point indices spaced roughly `spacingKm` apart
- * (always including the first and last point), using precomputed cumulative
- * distances. Used to speed up POI-proximity checks on dense tracks.
- */
-function downsampleRouteIndices(cumulative: number[], spacingKm: number): number[] {
-  if (cumulative.length === 0) {
-    return [];
-  }
-  const indices: number[] = [0];
-  let lastKept = 0;
-  for (let i = 1; i < cumulative.length; i++) {
-    if (cumulative[i] - cumulative[lastKept] >= spacingKm) {
-      indices.push(i);
-      lastKept = i;
-    }
-  }
-  if (indices[indices.length - 1] !== cumulative.length - 1 && cumulative.length > 1) {
-    indices.push(cumulative.length - 1);
-  }
-  return indices;
-}
-
-/**
- * Find the minimum distance from a POI to any point on the route.
- * Uses a coarse pass over downsampled route indices, then refines locally
- * around the coarse match so the returned nearestPointIndex refers to the
- * full-resolution route. Returns distance in km.
- */
-function findMinDistanceToRoute(
-  poi: POI,
-  routePoints: { lat: number; lon: number }[],
-  coarseIndices: number[],
-  cumulative: number[]
-): { distance: number; nearestPointIndex: number } {
-  if (coarseIndices.length === 0) {
-    return { distance: Infinity, nearestPointIndex: 0 };
-  }
-
-  // Coarse pass over the downsampled route
-  const coarseDistances = new Array<number>(coarseIndices.length);
-  let minDistance = Infinity;
-  let nearestIndex = coarseIndices[0];
-  for (let k = 0; k < coarseIndices.length; k++) {
-    const i = coarseIndices[k];
-    // haversineDistance returns meters, convert to km
-    const dist = haversineDistance(poi.lat, poi.lon, routePoints[i].lat, routePoints[i].lon) / 1000;
-    coarseDistances[k] = dist;
-    if (dist < minDistance) {
-      minDistance = dist;
-      nearestIndex = i;
-    }
-  }
-
-  // Refine at full resolution inside every coarse segment that could contain
-  // a closer point — not just around the single best coarse sample, which on
-  // switchbacks/out-and-backs can belong to a different pass of the route
-  // than the true nearest point. For a point p between coarse samples k and
-  // k+1, the triangle inequality gives dist(p) >= (d_k + d_k+1 - segLen) / 2
-  // (straight-line distance shrinks by at most the along-route distance
-  // walked from either endpoint), so segments failing that bound are pruned.
-  // This keeps the result exact for any sample spacing.
-  for (let k = 0; k + 1 < coarseIndices.length; k++) {
-    const startIdx = coarseIndices[k];
-    const endIdx = coarseIndices[k + 1];
-    const segLen = cumulative[endIdx] - cumulative[startIdx];
-    const lowerBound = (coarseDistances[k] + coarseDistances[k + 1] - segLen) / 2;
-    if (lowerBound >= minDistance) {
-      continue;
-    }
-    for (let i = startIdx + 1; i < endIdx; i++) {
-      const dist = haversineDistance(poi.lat, poi.lon, routePoints[i].lat, routePoints[i].lon) / 1000;
-      if (dist < minDistance) {
-        minDistance = dist;
-        nearestIndex = i;
-      }
-    }
-  }
-
-  return { distance: minDistance, nearestPointIndex: nearestIndex };
-}
-
-/**
- * Categorize a POI based on its OSM tags
- */
-function categorizePOI(poi: POI): POIType | null {
-  const tags = poi.tags;
-
-  // Water sources
-  if (
-    tags.amenity === 'drinking_water' ||
-    tags.natural === 'spring' ||
-    tags.man_made === 'water_tap' ||
-    (tags.natural === 'water' && tags.name)
-  ) {
-    return 'water';
-  }
-
-  // Camping
-  if (
-    tags.tourism === 'camp_site' ||
-    tags.tourism === 'alpine_hut' ||
-    tags.tourism === 'wilderness_hut' ||
-    tags.amenity === 'shelter'
-  ) {
-    return 'camping';
-  }
-
-  // Resupply
-  if (
-    tags.shop === 'supermarket' ||
-    tags.shop === 'convenience' ||
-    tags.shop === 'general' ||
-    tags.amenity === 'cafe' ||
-    tags.amenity === 'restaurant'
-  ) {
-    return 'resupply';
-  }
-
-  // Transport
-  if (
-    tags.highway === 'bus_stop' ||
-    tags.railway === 'station' ||
-    tags.railway === 'halt'
-  ) {
-    return 'transport';
-  }
-
-  // Emergency
-  if (
-    tags.amenity === 'hospital' ||
-    tags.amenity === 'pharmacy' ||
-    tags.amenity === 'police'
-  ) {
-    return 'emergency';
-  }
-
-  return null;
-}
-
-/**
- * Get a human-readable name for a POI
- */
-export function getPOIName(poi: POI): string {
-  const tags = poi.tags;
-
-  if (tags.name) {
-    return tags.name;
-  }
-
-  // Generate a name from tags
-  const type = tags.amenity || tags.tourism || tags.shop || tags.natural || tags.man_made || tags.highway || tags.railway;
-  if (type) {
-    return type.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
-  }
-
-  return 'Unknown POI';
-}
-
-/**
- * Get a description for a POI based on its tags
- */
-export function getPOIDescription(poi: POI): string {
-  const tags = poi.tags;
-  const parts: string[] = [];
-
-  if (tags.description) {
-    parts.push(tags.description);
-  }
-
-  if (tags.opening_hours) {
-    parts.push(`Hours: ${tags.opening_hours}`);
-  }
-
-  if (tags.phone) {
-    parts.push(`Phone: ${tags.phone}`);
-  }
-
-  if (tags.website) {
-    parts.push(`Web: ${tags.website}`);
-  }
-
-  if (tags.capacity) {
-    parts.push(`Capacity: ${tags.capacity}`);
-  }
-
-  if (tags.fee) {
-    parts.push(tags.fee === 'yes' ? 'Fee required' : 'Free');
-  }
-
-  return parts.join(' | ') || 'No additional information';
-}
-
-/**
- * Enrich a route with POIs from OpenStreetMap
+ * Enrich a route with POIs from OpenStreetMap.
+ *
+ * The route may be one polyline or several disjoint tracks. Chunks are fetched
+ * sequentially on purpose: Overpass grants only a couple of slots per source IP
+ * and the proxy shares one egress IP across all users, so parallel chunks would
+ * mostly return 429s. A chunk that fails is recorded and skipped; only an
+ * all-chunks failure throws.
  */
 export async function enrichRoute(
-  routePoints: { lat: number; lon: number }[],
+  route: LatLon[] | LatLon[][],
   options: EnrichmentOptions,
-  onProgress?: (message: string) => void
+  onProgress?: (progress: EnrichmentProgress) => void
 ): Promise<EnrichmentResult> {
   const startTime = Date.now();
-  const bufferKm = options.bufferKm ?? 5;
-  const maxDistance = options.maxDistanceFromRoute ?? 2;
+  const { signal } = options;
+  const searchRadiusKm =
+    options.searchRadiusKm ??
+    options.maxDistanceFromRoute ??
+    DEFAULT_SEARCH_RADIUS_KM;
+  const fetchPOIs = options.fetchPOIs ?? proxyPOIFetcher;
+  const maxVertices = options.maxVerticesPerChunk ?? 300;
 
-  onProgress?.('Calculating route bounds...');
-  const bounds = getBoundsFromPoints(routePoints, bufferKm);
-  const chunks = splitBounds(bounds);
+  const corridorRadiusMeters = Math.min(
+    Math.max(searchRadiusKm, 0) * 1000,
+    CORRIDOR_LIMITS.maxRadiusMeters
+  );
+  const queryRadiusMeters = Math.min(
+    Math.round(corridorRadiusMeters * QUERY_RADIUS_MARGIN),
+    CORRIDOR_LIMITS.maxRadiusMeters
+  );
 
-  onProgress?.(`Fetching POIs (${chunks.length} chunks)...`);
+  const throwIfAborted = () => {
+    if (signal?.aborted) {
+      throw abortError();
+    }
+  };
 
-  // Fetch POIs from all chunks. A failed chunk (after api-client retries)
-  // is recorded and skipped so previously fetched chunks are not lost.
-  const allPOIs: POI[] = [];
+  throwIfAborted();
+  onProgress?.({ stage: "prepare", message: "Preparing route corridor..." });
+
+  const geom = buildRouteGeometry(route);
+  const chunks = buildCorridorChunks(route, corridorRadiusMeters, maxVertices);
+
+  const byType = emptyByType<EnrichedPOI[]>(() => []);
+  const stats = {
+    totalFound: 0,
+    byType: emptyByType<number>(() => 0),
+    queryChunks: chunks.length,
+    failedChunks: 0,
+    queryTimeMs: 0,
+  };
+
+  if (chunks.length === 0) {
+    onProgress?.({ stage: "done", message: "Route has no usable points" });
+    stats.queryTimeMs = Date.now() - startTime;
+    return { pois: [], byType, failedChunks: [], stats };
+  }
+
   const failedChunks: ChunkFailure[] = [];
+  const unique = new Map<string, POI>();
+
   for (let i = 0; i < chunks.length; i++) {
-    onProgress?.(`Fetching chunk ${i + 1}/${chunks.length}...`);
-    const request: POIRequest = {
-      bounds: chunks[i],
-      types: options.types,
-    };
+    throwIfAborted();
+    onProgress?.({
+      stage: "fetch",
+      current: i + 1,
+      total: chunks.length,
+      message: `Fetching POIs (${i + 1}/${chunks.length})...`,
+    });
+
     try {
-      const chunkPOIs = await apiClient.fetchPOIs(request);
-      allPOIs.push(...chunkPOIs);
+      const chunkPOIs = await fetchPOIs(
+        { corridor: chunks[i], radiusMeters: queryRadiusMeters },
+        options.types,
+        signal
+      );
+      // Chunks overlap by a vertex and their radii overlap far more, so the
+      // same feature routinely comes back from several chunks.
+      for (const poi of chunkPOIs) {
+        const key = poiKey(poi);
+        if (!unique.has(key)) {
+          unique.set(key, poi);
+        }
+      }
     } catch (error) {
+      if (signal?.aborted || (error as Error)?.name === "AbortError") {
+        throw abortError();
+      }
       failedChunks.push({
         chunkIndex: i,
         error: error instanceof Error ? error.message : String(error),
       });
-      onProgress?.(`Chunk ${i + 1}/${chunks.length} failed, continuing...`);
     }
   }
 
   if (failedChunks.length === chunks.length) {
     throw new Error(
-      `Failed to fetch POIs for all ${chunks.length} area${chunks.length === 1 ? '' : 's'}: ${failedChunks[0].error}`
+      `Failed to fetch POIs for all ${chunks.length} area${chunks.length === 1 ? "" : "s"}: ${failedChunks[0].error}`
     );
   }
 
-  onProgress?.(`Processing ${allPOIs.length} POIs...`);
+  throwIfAborted();
+  onProgress?.({
+    stage: "process",
+    current: 0,
+    total: unique.size,
+    message: `Processing ${unique.size} POIs...`,
+  });
 
-  // Deduplicate POIs by ID
-  const uniquePOIs = new Map<number, POI>();
-  for (const poi of allPOIs) {
-    if (!uniquePOIs.has(poi.id)) {
-      uniquePOIs.set(poi.id, poi);
-    }
-  }
-
-  // Enrich and filter POIs
-  const enrichedPOIs: EnrichedPOI[] = [];
-  const byType: Record<POIType, EnrichedPOI[]> = {
-    water: [],
-    camping: [],
-    resupply: [],
-    transport: [],
-    emergency: [],
-  };
-
-  // Precompute cumulative distances along the route (also used to report
-  // "km along route") and a downsampled index set (~150m spacing) for fast
-  // proximity checks. findMinDistanceToRoute refines the coarse result at
-  // full resolution, so the returned distances/indices stay exact.
-  const cumulativeDistances = computeCumulativeDistances(routePoints);
-  const coarseIndices = downsampleRouteIndices(cumulativeDistances, 0.15);
-
-  for (const poi of uniquePOIs.values()) {
-    const { distance, nearestPointIndex } = findMinDistanceToRoute(poi, routePoints, coarseIndices, cumulativeDistances);
-
-    // Filter by max distance from route
-    if (distance > maxDistance) {
+  const pois: EnrichedPOI[] = [];
+  for (const poi of unique.values()) {
+    const proximity = nearestPointOnRoute(poi, geom);
+    if (!(proximity.distanceKm <= searchRadiusKm)) {
       continue;
     }
 
-    const category = categorizePOI(poi);
+    const category = categorizePOI(poi.tags);
     if (!category || !options.types.includes(category)) {
       continue;
     }
 
-    const enrichedPOI: EnrichedPOI = {
+    const enriched: EnrichedPOI = {
       ...poi,
-      distanceFromRoute: distance,
-      nearestPointIndex,
-      distanceAlongRoute: cumulativeDistances[nearestPointIndex],
       category,
+      distanceFromRoute: proximity.distanceKm,
+      distanceAlongRoute: proximity.distanceAlongRouteKm,
+      nearestPointIndex: proximity.nearestPointIndex,
+      segmentIndex: proximity.segmentIndex,
+      t: proximity.t,
     };
-
-    enrichedPOIs.push(enrichedPOI);
-    byType[category].push(enrichedPOI);
+    pois.push(enriched);
+    byType[category].push(enriched);
   }
 
-  // Sort by position along route
-  enrichedPOIs.sort((a, b) => a.nearestPointIndex - b.nearestPointIndex);
-  for (const type of options.types) {
-    byType[type].sort((a, b) => a.nearestPointIndex - b.nearestPointIndex);
-  }
-
-  const stats = {
-    totalFound: enrichedPOIs.length,
-    byType: {} as Record<POIType, number>,
-    queryChunks: chunks.length,
-    failedChunks: failedChunks.length,
-    queryTimeMs: Date.now() - startTime,
-  };
-
-  for (const type of options.types) {
+  const byDistanceAlong = (a: EnrichedPOI, b: EnrichedPOI) =>
+    a.distanceAlongRoute - b.distanceAlongRoute;
+  pois.sort(byDistanceAlong);
+  for (const type of POI_TYPES) {
+    byType[type].sort(byDistanceAlong);
     stats.byType[type] = byType[type].length;
   }
 
-  onProgress?.(`Found ${enrichedPOIs.length} POIs along route`);
+  stats.totalFound = pois.length;
+  stats.failedChunks = failedChunks.length;
+  stats.queryTimeMs = Date.now() - startTime;
 
-  return {
-    pois: enrichedPOIs,
-    byType,
-    failedChunks,
-    stats,
-  };
+  onProgress?.({
+    stage: "done",
+    message: `Found ${pois.length} POIs along route`,
+  });
+
+  return { pois, byType, failedChunks, stats };
 }
 
 /**
@@ -399,12 +280,18 @@ function escapeCSVField(field: string): string {
   return field;
 }
 
-/**
- * Format POIs as CSV for export
- */
+/** Format POIs as CSV for export. */
 export function exportPOIsToCSV(pois: EnrichedPOI[]): string {
-  const headers = ['Name', 'Category', 'Latitude', 'Longitude', 'Distance Along Route (km)', 'Distance from Route (km)', 'Description'];
-  const rows = pois.map(poi => [
+  const headers = [
+    "Name",
+    "Category",
+    "Latitude",
+    "Longitude",
+    "Distance Along Route (km)",
+    "Distance from Route (km)",
+    "Description",
+  ];
+  const rows = pois.map((poi) => [
     getPOIName(poi),
     poi.category,
     poi.lat.toFixed(6),
@@ -415,49 +302,58 @@ export function exportPOIsToCSV(pois: EnrichedPOI[]): string {
   ]);
 
   return [
-    headers.map(escapeCSVField).join(','),
-    ...rows.map(r => r.map(escapeCSVField).join(',')),
-  ].join('\n');
+    headers.map(escapeCSVField).join(","),
+    ...rows.map((r) => r.map(escapeCSVField).join(",")),
+  ].join("\n");
 }
 
 /**
- * Format POIs as GPX waypoints for export
+ * Format POIs as GPX waypoints.
+ *
+ * Names and descriptions are XML-escaped rather than stripped: OSM names
+ * legitimately contain `&` and `'` ("Joe's Cafe & Bar"), and deleting those
+ * characters silently corrupts the data the user asked to export.
  */
-export function exportPOIsToGPX(pois: EnrichedPOI[], routeName?: string): string {
-  const waypoints = pois.map(poi => {
-    const name = getPOIName(poi).replace(/[<>&'"]/g, '');
-    const desc = getPOIDescription(poi).replace(/[<>&'"]/g, '');
-    const sym = getCategorySymbol(poi.category);
+export function exportPOIsToGPX(
+  pois: EnrichedPOI[],
+  routeName?: string
+): string {
+  const waypoints = pois
+    .map((poi) => {
+      const name = escapeXml(getPOIName(poi));
+      const desc = escapeXml(getPOIDescription(poi));
+      const sym = escapeXml(getCategorySymbol(poi.category));
 
-    return `  <wpt lat="${poi.lat}" lon="${poi.lon}">
+      return `  <wpt lat="${poi.lat}" lon="${poi.lon}">
     <name>${name}</name>
     <desc>${desc}</desc>
     <sym>${sym}</sym>
-    <type>${poi.category}</type>
+    <type>${escapeXml(poi.category)}</type>
   </wpt>`;
-  }).join('\n');
+    })
+    .join("\n");
+
+  const title = routeName ? `${routeName} POIs` : "Route POIs";
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <gpx version="1.1" creator="GPX Tools POI Enrichment"
   xmlns="http://www.topografix.com/GPX/1/1">
   <metadata>
-    <name>${routeName ? `${routeName} POIs` : 'Route POIs'}</name>
+    <name>${escapeXml(title)}</name>
     <time>${new Date().toISOString()}</time>
   </metadata>
 ${waypoints}
 </gpx>`;
 }
 
-/**
- * Get GPX symbol for a POI category
- */
+/** GPX symbol for a POI category. */
 function getCategorySymbol(category: POIType): string {
   const symbols: Record<POIType, string> = {
-    water: 'Drinking Water',
-    camping: 'Campground',
-    resupply: 'Shopping Center',
-    transport: 'Ground Transportation',
-    emergency: 'Medical Facility',
+    water: "Drinking Water",
+    camping: "Campground",
+    resupply: "Shopping Center",
+    transport: "Ground Transportation",
+    emergency: "Medical Facility",
   };
-  return symbols[category] || 'Flag, Blue';
+  return symbols[category] || "Flag, Blue";
 }

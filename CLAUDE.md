@@ -31,6 +31,8 @@ All processing logic lives here as reusable modules exported via `index.ts`:
 - `gpx-optimizer.ts` - Simplify, smooth elevation, truncate
 - `csv-processor.ts` - Parse Caltopo CSV exports
 - `distance.ts` - Haversine distance calculations (3D with elevation)
+- `osm-poi.ts` - POI catalog, Overpass QL builder (`nwr` + `out center`), area validation, corridor chunking, route geometry
+- `overpass-client.ts` - Direct Overpass fetcher (retries/throttling) for Node scripts
 - `poi-enrichment.ts` - OpenStreetMap POI queries
 - `route-comparison.ts` - Compare two routes
 - `daylight.ts` - Sunrise/sunset via suncalc
@@ -43,12 +45,16 @@ Each tool is a self-contained HTML + TypeScript pair. Tools process files client
 
 ### Serverless API (`src/api/`)
 
-- `overpass.ts` - OpenStreetMap POI proxy with rate limiting and caching
+- `overpass.ts` - OpenStreetMap POI proxy. Accepts a corridor (`{corridor, radiusMeters, types}`) or bbox (`{bounds, types}`) body, validates it with `validateOverpassArea`/`parseOverpassArea` and builds the query with `buildOverpassQuery` from `src/lib/osm-poi.ts` - it owns no tag rules of its own. Coordinates are canonicalised with `roundCoord` so the sha256 cache key and the query text agree.
 - `elevation.ts` - Elevation data enrichment
 - `health.ts` - Service health check
 - `_cors.ts`, `_logger.ts` - Shared utilities
 
 API features: CORS (configured via `ALLOWED_ORIGINS` env), rate limiting (default 10 req/min), Redis caching via `@upstash/redis` (shared client in `_redis.ts`).
+
+`POI_CATALOG` in `src/lib/osm-poi.ts` is the single source of truth for the OSM tag rules: the same rules generate the server's Overpass selectors and the client's `categorizePOI` predicate, so add or change a POI tag there and nowhere else.
+
+Redis is best effort in `overpass.ts`: cache reads/writes and the rate-limit counter are wrapped so an outage logs and falls open (`X-Cache: BYPASS`) instead of failing the request. Timeouts are tied to `vercel.json`'s `maxDuration: 30` - Overpass `[timeout:22]`, HTTP abort at 27 s; an upstream 429/504 or timeout becomes a `503` with `Retry-After`.
 
 **Note:** Root `api/` contains thin re-export stubs (e.g. `export { default } from '../src/api/overpass'`) required by Vercel's function discovery. Actual logic lives in `src/api/`.
 
@@ -72,4 +78,4 @@ These are not needed for `npm run dev` (static site only).
 
 ## Testing
 
-Tests use Vitest with jsdom. Test files are colocated with source (`*.test.ts` in `src/lib/`).
+Tests use Vitest with jsdom. Test files are colocated with source (`*.test.ts` in `src/lib/` and `src/api/`). API handler tests opt out of jsdom with `// @vitest-environment node` (the handlers are plain `Request` -> `Response` functions) and mock `./_redis` with `vi.mock`.

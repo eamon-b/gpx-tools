@@ -75,16 +75,18 @@
 
         <h3>Options</h3>
         <div class="option-row">
-          <label for="buffer-km">Search buffer (km from route):</label>
-          <input type="number" id="buffer-km" value="5" min="1" max="50" step="1">
+          <label for="search-radius">Search radius (km from route):</label>
+          <input type="number" id="search-radius" value="2" min="0.1" max="8" step="0.1">
         </div>
-        <div class="option-row">
-          <label for="max-distance">Max distance from route (km):</label>
-          <input type="number" id="max-distance" value="2" min="0.1" max="10" step="0.1">
-        </div>
+        <span class="option-hint">
+          POIs are searched in a corridor that follows the route itself, so only
+          places genuinely within this distance of the line come back. A larger
+          radius means more results and a slower query.
+        </span>
       </div>
 
       <button class="process-btn" id="enrich-btn" disabled>Find POIs</button>
+      <button class="cancel-btn" id="cancel-btn" hidden>Cancel</button>
 
       <div class="error-message" id="error-area" role="alert" hidden></div>
 
@@ -111,16 +113,13 @@
           </div>
         </div>
 
-        <div class="poi-tabs">
-          <button class="poi-tab active" data-type="all">All</button>
-          <button class="poi-tab" data-type="water">💧 Water</button>
-          <button class="poi-tab" data-type="camping">⛺ Camping</button>
-          <button class="poi-tab" data-type="resupply">🛒 Resupply</button>
-          <button class="poi-tab" data-type="transport">🚌 Transport</button>
-          <button class="poi-tab" data-type="emergency">🏥 Emergency</button>
-        </div>
+        <!-- Tabs are rendered per run: only the requested categories appear, with counts. -->
+        <div class="poi-tabs" id="poi-tabs"></div>
 
-        <div class="poi-list" id="poi-list"></div>
+        <div class="poi-list" id="poi-list">
+          <div id="poi-items"></div>
+          <button class="show-more-btn" id="poi-show-more" hidden>Show more</button>
+        </div>
 
         <div class="download-buttons">
           <button class="download-btn" id="download-csv">Download CSV</button>
@@ -130,7 +129,7 @@
     </section>
 
     <footer>
-      <p>POI data from <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a>. Processing happens in your browser.</p>
+      <p>POI data from <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a>. Queries follow a corridor along your route; your GPX file never leaves your browser.</p>
       <p><a href="./">Back to Tools</a></p>
     </footer>
   </div>

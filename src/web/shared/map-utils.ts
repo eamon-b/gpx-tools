@@ -77,6 +77,10 @@ export function createRoutePolyline(
 
 /**
  * Create a circle marker (for POIs, day markers, etc.)
+ *
+ * Pass a shared `renderer` (e.g. a single `L.canvas()`) when placing many
+ * hundreds of markers: the default SVG renderer creates one DOM node per
+ * marker, and panning grinds to a halt well before a thousand of them.
  */
 export function createCircleMarker(
   lat: number,
@@ -86,6 +90,7 @@ export function createCircleMarker(
     radius?: number;
     fillOpacity?: number;
     popup?: string;
+    renderer?: L.Renderer;
   } = {}
 ): L.CircleMarker {
   const marker = L.circleMarker([lat, lon], {
@@ -94,6 +99,7 @@ export function createCircleMarker(
     color: '#fff',
     weight: 2,
     fillOpacity: options.fillOpacity ?? 0.8,
+    renderer: options.renderer,
   });
 
   if (options.popup) {
