@@ -127,6 +127,7 @@ function emptyByType<T>(make: () => T): Record<POIType, T> {
     water: make(),
     camping: make(),
     resupply: make(),
+    restaurant: make(),
     transport: make(),
     emergency: make(),
   };
@@ -397,6 +398,7 @@ function getCategorySymbol(category: POIType): string {
     water: "Drinking Water",
     camping: "Campground",
     resupply: "Shopping Center",
+    restaurant: "Restaurant",
     transport: "Ground Transportation",
     emergency: "Medical Facility",
   };

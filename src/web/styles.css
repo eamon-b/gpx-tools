@@ -1210,6 +1210,13 @@ footer a:hover {
   border-radius: 50%;
 }
 
+.legend-item.restaurant::before {
+  background: #eab308;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
 .legend-item.transport::before {
   background: #8b5cf6;
   width: 10px;

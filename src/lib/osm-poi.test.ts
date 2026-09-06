@@ -100,14 +100,30 @@ describe("POI catalog", () => {
   });
 
   it("runs fallback rules only after every specific rule has failed", () => {
-    // A cafe that also has a tap stays resupply...
+    // A cafe that also has a tap stays restaurant...
     expect(categorizePOI({ amenity: "cafe", drinking_water: "yes" })).toBe(
-      "resupply"
+      "restaurant"
     );
     // ...but toilets with a tap are the only water source around.
     expect(categorizePOI({ amenity: "toilets", drinking_water: "yes" })).toBe(
       "water"
     );
+  });
+
+  it("keeps eateries out of resupply", () => {
+    expect(categorizePOI({ amenity: "restaurant" })).toBe("restaurant");
+    expect(categorizePOI({ amenity: "cafe" })).toBe("restaurant");
+    expect(categorizePOI({ amenity: "fast_food" })).toBe("restaurant");
+    expect(categorizePOI({ amenity: "pub" })).toBe("restaurant");
+    expect(categorizePOI({ shop: "supermarket" })).toBe("resupply");
+    expect(categorizePOI({ shop: "bakery" })).toBe("resupply");
+    // A resupply-only query no longer fetches eateries at all.
+    const query = buildOverpassQuery(
+      { bounds: { south: 0, north: 1, west: 0, east: 1 } },
+      ["resupply"]
+    );
+    expect(query).not.toMatch(/restaurant|cafe|fast_food|pub/);
+    expect(query).toContain('["shop"~"^(');
   });
 
   it("no longer treats a named lake as a water source", () => {
@@ -145,14 +161,16 @@ describe("categorizePOI with preferred types", () => {
   });
 
   it("runs the preferred fallback rules before the other types", () => {
-    // A cafe with a tap: resupply by default (specific rule beats fallback)...
+    // A cafe with a tap: restaurant by default (specific rule beats fallback)...
     const cafeWithTap = { amenity: "cafe", drinking_water: "yes" };
-    expect(categorizePOI(cafeWithTap)).toBe("resupply");
+    expect(categorizePOI(cafeWithTap)).toBe("restaurant");
     // ...water when only water was asked for, via the drinking_water fallback...
     expect(categorizePOI(cafeWithTap, ["water"])).toBe("water");
-    // ...and resupply again when both are wanted, because inside the preferred
+    // ...and restaurant again when both are wanted, because inside the preferred
     // set the non-fallback pass still runs first.
-    expect(categorizePOI(cafeWithTap, ["water", "resupply"])).toBe("resupply");
+    expect(categorizePOI(cafeWithTap, ["water", "restaurant"])).toBe(
+      "restaurant"
+    );
   });
 
   it("still falls through to the real category when nothing preferred matches", () => {
