@@ -5,6 +5,10 @@ import {
   exportPOIsToGPX,
   getPOIName,
   getPOIDescription,
+  // 8 km, not the 10 km server cap: enrichRoute pads the Overpass radius by
+  // 1.25x to cover corridor simplification, and that headroom vanishes at the
+  // cap. The lib owns the number so the UI cannot drift from the clamp.
+  MAX_SEARCH_RADIUS_KM,
   type POIType,
   type EnrichedPOI,
   type EnrichmentProgress,
@@ -67,9 +71,6 @@ const searchRadiusInput = document.getElementById(
 
 const DEFAULT_SEARCH_RADIUS_KM = 2;
 const MIN_SEARCH_RADIUS_KM = 0.1;
-// 8 km, not the 10 km server cap: enrichRoute pads the Overpass radius by 1.25x to
-// cover corridor simplification, and that headroom vanishes at the cap.
-const MAX_SEARCH_RADIUS_KM = 8;
 
 /** Items rendered per page in the results list. */
 const PAGE_SIZE = 200;

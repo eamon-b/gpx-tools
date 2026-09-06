@@ -146,26 +146,51 @@ function ruleMatches(tags: Record<string, string>, rule: POITagRule): boolean {
  * Two passes: every non-fallback rule of every category first (catalog order),
  * then the fallback rules. That is what keeps `amenity=cafe` + `drinking_water=yes`
  * classified as resupply while `amenity=toilets` + `drinking_water=yes` becomes water.
+ *
+ * `preferred` (normally the types a caller asked for) is tried first, both
+ * passes, before the remaining types. Without it a feature that satisfies rules
+ * of two categories always lands in the one that comes first in the catalog:
+ * a bus stop with a shelter would be "camping", and a Transport-only search
+ * would then throw it away even though its own selector fetched it. With
+ * `preferred`, whatever a requested type's selector matched is classified as
+ * that type.
  */
-export function categorizePOI(tags: Record<string, string>): POIType | null {
+export function categorizePOI(
+  tags: Record<string, string>,
+  preferred?: readonly POIType[]
+): POIType | null {
   if (!tags) {
     return null;
   }
-  for (const type of POI_TYPES) {
-    for (const rule of POI_CATALOG[type]) {
-      if (!rule.fallback && ruleMatches(tags, rule)) {
-        return type;
+  const order: POIType[] = preferred
+    ? [
+        ...POI_TYPES.filter((t) => preferred.includes(t)),
+        ...POI_TYPES.filter((t) => !preferred.includes(t)),
+      ]
+    : [...POI_TYPES];
+  const preferredCount = preferred
+    ? order.filter((t) => preferred.includes(t)).length
+    : order.length;
+
+  const scan = (types: POIType[], fallback: boolean): POIType | null => {
+    for (const type of types) {
+      for (const rule of POI_CATALOG[type]) {
+        if (!!rule.fallback === fallback && ruleMatches(tags, rule)) {
+          return type;
+        }
       }
     }
-  }
-  for (const type of POI_TYPES) {
-    for (const rule of POI_CATALOG[type]) {
-      if (rule.fallback && ruleMatches(tags, rule)) {
-        return type;
-      }
-    }
-  }
-  return null;
+    return null;
+  };
+
+  const first = order.slice(0, preferredCount);
+  const rest = order.slice(preferredCount);
+  return (
+    scan(first, false) ??
+    scan(first, true) ??
+    scan(rest, false) ??
+    scan(rest, true)
+  );
 }
 
 /** Human-readable name for a POI, derived from tags when `name` is absent. */
@@ -235,9 +260,17 @@ export interface BBox {
   east: number;
 }
 
-/** Either a bbox or a polyline corridor. Corridor is the preferred mode. */
+/**
+ * Either a bbox or a polyline corridor. Corridor is the preferred mode.
+ *
+ * A corridor is one polyline or several: a route with disjoint side trips
+ * produces several short polylines, and packing them into one query (see
+ * `packCorridorChunks`) costs Overpass almost nothing while saving a round
+ * trip - and a slot of the proxy's per-minute rate limit - per polyline.
+ */
 export type OverpassArea =
-  { bounds: BBox } | { corridor: LatLon[]; radiusMeters: number };
+  | { bounds: BBox }
+  | { corridor: LatLon[] | LatLon[][]; radiusMeters: number };
 
 export interface OverpassQueryOptions {
   /** Overpass `[timeout:]` value in seconds. Default 22. */
@@ -264,16 +297,63 @@ function escapeLiteral(value: string): string {
   return value.replace(/(["\\])/g, "\\$1");
 }
 
-/** The `(around:...)` or `(s,w,n,e)` suffix every statement in the query carries. */
-function areaFilter(area: OverpassArea): string {
+/**
+ * Global `[bbox:s,w,n,e]` setting for a corridor query: the extent of every
+ * polyline, padded by the search radius.
+ *
+ * Without it Overpass resolves each `nwr["amenity"="restaurant"](around:...)`
+ * by walking the planet-wide tag index and only then testing the corridor,
+ * which for a dozen tags over a 300 km route blows the 22 s budget. With a
+ * global bbox the tag scan is confined to the route's extent, so the query
+ * runs in a second or two. Returns "" when the extent cannot be expressed as
+ * a bbox (a corridor crossing the antimeridian).
+ */
+function corridorBBoxSetting(polylines: LatLon[][], radiusMeters: number): string {
+  let south = Infinity;
+  let north = -Infinity;
+  let west = Infinity;
+  let east = -Infinity;
+  for (const polyline of polylines) {
+    for (const p of polyline) {
+      if (p.lat < south) south = p.lat;
+      if (p.lat > north) north = p.lat;
+      if (p.lon < west) west = p.lon;
+      if (p.lon > east) east = p.lon;
+    }
+  }
+  if (!Number.isFinite(south) || east - west > 180) {
+    return "";
+  }
+  const latPad = radiusMeters / METERS_PER_DEGREE;
+  const cosLat = Math.max(
+    Math.cos((Math.max(Math.abs(south), Math.abs(north)) * Math.PI) / 180),
+    0.01
+  );
+  const lonPad = latPad / cosLat;
+  const s = Math.max(-90, south - latPad);
+  const n = Math.min(90, north + latPad);
+  const w = Math.max(-180, west - lonPad);
+  const e = Math.min(180, east + lonPad);
+  return `[bbox:${fmtCoord(s)},${fmtCoord(w)},${fmtCoord(n)},${fmtCoord(e)}]`;
+}
+
+/**
+ * The `(around:...)` or `(s,w,n,e)` suffixes every statement in the query
+ * carries: one per corridor polyline, or a single bbox filter.
+ */
+function areaFilters(area: OverpassArea): string[] {
   if ("corridor" in area) {
-    const coords = area.corridor
-      .map((p) => `${fmtCoord(p.lat)},${fmtCoord(p.lon)}`)
-      .join(",");
-    return `(around:${area.radiusMeters},${coords})`;
+    return toPolylines(area.corridor).map((polyline) => {
+      const coords = polyline
+        .map((p) => `${fmtCoord(p.lat)},${fmtCoord(p.lon)}`)
+        .join(",");
+      return `(around:${area.radiusMeters},${coords})`;
+    });
   }
   const b = area.bounds;
-  return `(${fmtCoord(b.south)},${fmtCoord(b.west)},${fmtCoord(b.north)},${fmtCoord(b.east)})`;
+  return [
+    `(${fmtCoord(b.south)},${fmtCoord(b.west)},${fmtCoord(b.north)},${fmtCoord(b.east)})`,
+  ];
 }
 
 /** Render the tag selector part (`["k"="v"]...`) for one rule. */
@@ -302,6 +382,10 @@ function ruleSelector(rule: POITagRule): string {
  *   `nwr["amenity"~"^(drinking_water|water_point)$"](around:2000,...);`
  * Rules with require/exclude conditions get their own statement, e.g.
  *   `nwr["amenity"="shelter"]["shelter_type"!="public_transport"](around:...);`
+ * A multi-polyline corridor repeats every statement once per polyline.
+ *
+ * Throws when `types` yields no statement at all (an empty union is an
+ * Overpass syntax error).
  */
 export function buildOverpassQuery(
   area: OverpassArea,
@@ -309,15 +393,21 @@ export function buildOverpassQuery(
   opts: OverpassQueryOptions = {}
 ): string {
   const timeout = opts.timeoutSeconds ?? 22;
-  const filter = areaFilter(area);
+  const filters = areaFilters(area);
+  const bboxSetting =
+    "corridor" in area
+      ? corridorBBoxSetting(toPolylines(area.corridor), area.radiusMeters)
+      : "";
   const statements: string[] = [];
   const seen = new Set<string>();
 
   const push = (selector: string) => {
-    const stmt = `  nwr${selector}${filter};`;
-    if (!seen.has(stmt)) {
-      seen.add(stmt);
-      statements.push(stmt);
+    for (const filter of filters) {
+      const stmt = `  nwr${selector}${filter};`;
+      if (!seen.has(stmt)) {
+        seen.add(stmt);
+        statements.push(stmt);
+      }
     }
   };
 
@@ -345,9 +435,11 @@ export function buildOverpassQuery(
       if (values.length === 1) {
         push(`["${escapeLiteral(key)}"="${escapeLiteral(values[0])}"]`);
       } else {
-        push(
-          `["${escapeLiteral(key)}"~"^(${values.map(escapeRegexValue).join("|")})$"]`
-        );
+        // Regex-escape first, then escape the result for the QL string literal.
+        const alternation = values
+          .map((v) => escapeLiteral(escapeRegexValue(v)))
+          .join("|");
+        push(`["${escapeLiteral(key)}"~"^(${alternation})$"]`);
       }
     }
     // Conditional rules cannot be folded into a regex union.
@@ -358,7 +450,14 @@ export function buildOverpassQuery(
     }
   }
 
-  return `[out:json][timeout:${timeout}];\n(\n${statements.join("\n")}\n);\nout center;`;
+  if (statements.length === 0) {
+    // `( );` is an Overpass syntax error; fail here with a useful message.
+    throw new Error(
+      `No POI types to query (got ${JSON.stringify(types)}); known types: ${POI_TYPES.join(", ")}`
+    );
+  }
+
+  return `[out:json][timeout:${timeout}]${bboxSetting};\n(\n${statements.join("\n")}\n);\nout center;`;
 }
 
 // ---------------------------------------------------------------------------
@@ -428,6 +527,36 @@ export function normalizeOverpassElements(
   return out;
 }
 
+/**
+ * Why a 200 response from Overpass is NOT a usable result, or null when it is.
+ *
+ * Overpass reports runtime failures (query timed out, out of memory) with HTTP
+ * 200 and `{"elements": [], "remark": "runtime error: ..."}`. Treating that as
+ * an empty result - let alone caching it - tells the user there is nothing
+ * along the route when the truth is "try again later". Non-JSON bodies (the
+ * HTML error page) and payloads without an `elements` array are rejected too.
+ */
+export function overpassPayloadError(payload: unknown): string | null {
+  if (!payload || typeof payload !== "object") {
+    return "Overpass returned a non-JSON response";
+  }
+  const data = payload as { elements?: unknown; remark?: unknown };
+  if (typeof data.remark === "string" && /runtime error/i.test(data.remark)) {
+    return `Overpass ${data.remark.trim()}`;
+  }
+  if (!Array.isArray(data.elements)) {
+    return "Overpass response has no elements array";
+  }
+  return null;
+}
+
+/** Does an Overpass failure message describe a transient (retryable) condition? */
+export function isTransientOverpassError(message: string): boolean {
+  return /timed out|out of memory|too busy|load|rate_limited|runtime error/i.test(
+    message
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Corridor preparation
 // ---------------------------------------------------------------------------
@@ -464,6 +593,31 @@ function isFinitePoint(p: LatLon | undefined): p is LatLon {
 }
 
 /**
+ * Split every polyline at its unusable points (NaN, out of range) and drop
+ * empty pieces. Splitting rather than filtering matters: deleting a corrupt
+ * fix from the middle of a track would weld its neighbours into a segment
+ * that was never walked, and POIs could then match against that phantom line.
+ */
+function splitAtInvalidPoints(route: LatLon[] | LatLon[][]): LatLon[][] {
+  const out: LatLon[][] = [];
+  for (const polyline of toPolylines(route)) {
+    let run: LatLon[] = [];
+    for (const p of polyline) {
+      if (isFinitePoint(p)) {
+        run.push({ lat: p.lat, lon: p.lon });
+      } else if (run.length > 0) {
+        out.push(run);
+        run = [];
+      }
+    }
+    if (run.length > 0) {
+      out.push(run);
+    }
+  }
+  return out;
+}
+
+/**
  * Prepare `around:` polylines for querying.
  *
  * Each polyline is simplified with Douglas-Peucker at `radiusMeters / 4` — a
@@ -483,6 +637,11 @@ function isFinitePoint(p: LatLon | undefined): p is LatLon {
  * The result is then split into chunks of at most `maxVertices` vertices that
  * overlap by one vertex, so no piece of the corridor falls between chunks.
  * A single-vertex chunk is still a valid `around:` (a circle around a point).
+ * `maxVertices` is floored at 2: a chunk needs a fresh vertex beyond the
+ * overlap or the split could never advance.
+ *
+ * Short polylines are NOT merged here; `packCorridorChunks` groups them into
+ * shared queries afterwards.
  */
 export function buildCorridorChunks(
   route: LatLon[] | LatLon[][],
@@ -490,17 +649,12 @@ export function buildCorridorChunks(
   maxVertices = 300,
   joinGapMeters = radiusMeters * 2
 ): LatLon[][] {
-  const limit = Math.max(1, Math.floor(maxVertices));
+  const limit = Math.max(2, Math.floor(maxVertices));
   const tolerance = Math.max(1, radiusMeters / 4);
 
   // Simplify each polyline, then join near-contiguous neighbours.
   const joined: LatLon[][] = [];
-  for (const polyline of toPolylines(route)) {
-    const clean = polyline.filter(isFinitePoint);
-    if (clean.length === 0) {
-      continue;
-    }
-
+  for (const clean of splitAtInvalidPoints(route)) {
     // douglasPeucker works on GpxPoint; ele/time are irrelevant to the 2D simplification.
     const asGpx: GpxPoint[] = clean.map((p) => ({
       lat: p.lat,
@@ -543,11 +697,57 @@ export function buildCorridorChunks(
 }
 
 /**
+ * Group corridor polylines into as few queries as possible.
+ *
+ * Polylines are taken in order and appended to the current group while the
+ * group's total vertex count stays within `maxVertices`; a polyline that does
+ * not fit starts a new group. A route with a dozen short side trips therefore
+ * costs one query, not a dozen - which matters because the proxy's rate limit
+ * is per request, and Overpass charges by the work a query does, not by the
+ * number of `around:` filters in it.
+ *
+ * Polylines longer than `maxVertices` (which `buildCorridorChunks` never
+ * produces) are passed through as groups of their own.
+ */
+export function packCorridorChunks(
+  polylines: LatLon[][],
+  maxVertices = 300
+): LatLon[][][] {
+  const limit = Math.max(1, Math.floor(maxVertices));
+  const groups: LatLon[][][] = [];
+  let current: LatLon[][] = [];
+  let count = 0;
+  for (const polyline of polylines) {
+    if (polyline.length === 0) {
+      continue;
+    }
+    if (current.length > 0 && count + polyline.length > limit) {
+      groups.push(current);
+      current = [];
+      count = 0;
+    }
+    current.push(polyline);
+    count += polyline.length;
+  }
+  if (current.length > 0) {
+    groups.push(current);
+  }
+  return groups;
+}
+
+/** Total vertex count of a corridor in either shape. */
+export function corridorVertexCount(corridor: LatLon[] | LatLon[][]): number {
+  return toPolylines(corridor).reduce((n, p) => n + p.length, 0);
+}
+
+/**
  * Validate an area from untrusted JSON. Returns an error message, or null when
  * the value is a usable `OverpassArea`.
  *
  * Corridor vertices are accepted as `{lat, lon}` objects or as `[lat, lon]`
- * pairs, because the compact pair form is what travels over the wire.
+ * pairs, because the compact pair form is what travels over the wire. The
+ * corridor may be one polyline (a flat list of vertices) or several (a list
+ * of lists); the vertex limit applies to the total.
  */
 export function validateOverpassArea(area: unknown): string | null {
   if (!area || typeof area !== "object") {
@@ -556,30 +756,36 @@ export function validateOverpassArea(area: unknown): string | null {
   const a = area as Record<string, unknown>;
 
   if ("corridor" in a) {
-    const corridor = a.corridor;
-    if (!Array.isArray(corridor) || corridor.length === 0) {
-      return "corridor must be a non-empty array";
+    const polylines = wirePolylines(a.corridor);
+    if (!polylines) {
+      return "corridor must be a non-empty array of vertices, or of polylines";
     }
-    if (corridor.length > CORRIDOR_LIMITS.maxVertices) {
-      return `corridor has too many vertices (${corridor.length} > ${CORRIDOR_LIMITS.maxVertices})`;
+    const vertexCount = polylines.reduce((n, p) => n + p.length, 0);
+    if (vertexCount > CORRIDOR_LIMITS.maxVertices) {
+      return `corridor has too many vertices (${vertexCount} > ${CORRIDOR_LIMITS.maxVertices})`;
     }
     const radius = a.radiusMeters;
-    if (typeof radius !== "number" || !Number.isFinite(radius) || radius <= 0) {
-      return "radiusMeters must be a positive number";
+    if (typeof radius !== "number" || !Number.isFinite(radius) || radius < 1) {
+      return "radiusMeters must be a positive number (at least 1 m)";
     }
     if (radius > CORRIDOR_LIMITS.maxRadiusMeters) {
       return `radiusMeters too large (max ${CORRIDOR_LIMITS.maxRadiusMeters})`;
     }
-    for (const vertex of corridor) {
-      const point = coerceLatLon(vertex);
-      if (!point) {
-        return "corridor vertices must be {lat, lon} or [lat, lon] with finite values";
+    for (const polyline of polylines) {
+      if (polyline.length === 0) {
+        return "corridor polylines must be non-empty";
       }
-      if (point.lat < -90 || point.lat > 90) {
-        return "corridor latitude out of range";
-      }
-      if (point.lon < -180 || point.lon > 180) {
-        return "corridor longitude out of range";
+      for (const vertex of polyline) {
+        const point = coerceLatLon(vertex);
+        if (!point) {
+          return "corridor vertices must be {lat, lon} or [lat, lon] with finite values";
+        }
+        if (point.lat < -90 || point.lat > 90) {
+          return "corridor latitude out of range";
+        }
+        if (point.lon < -180 || point.lon > 180) {
+          return "corridor longitude out of range";
+        }
       }
     }
     return null;
@@ -615,9 +821,34 @@ export function validateOverpassArea(area: unknown): string | null {
   return 'Area must have either "corridor" or "bounds"';
 }
 
+/**
+ * Read a wire corridor as a list of polylines without validating vertices.
+ * A flat list of vertices (`[[lat, lon], ...]` or `[{lat, lon}, ...]`) is one
+ * polyline; a list of such lists is several. Returns null for anything else.
+ */
+function wirePolylines(value: unknown): unknown[][] | null {
+  if (!Array.isArray(value) || value.length === 0) {
+    return null;
+  }
+  const first: unknown = value[0];
+  const isVertex = (v: unknown) =>
+    (Array.isArray(v) && typeof v[0] === "number") ||
+    (!!v && typeof v === "object" && !Array.isArray(v));
+  if (isVertex(first)) {
+    return [value];
+  }
+  if (Array.isArray(first)) {
+    return value.every(Array.isArray) ? (value as unknown[][]) : null;
+  }
+  return null;
+}
+
 /** Coerce a wire vertex (`{lat,lon}` or `[lat,lon]`) into a LatLon, or null. */
 function coerceLatLon(value: unknown): LatLon | null {
   if (Array.isArray(value)) {
+    if (value.length !== 2) {
+      return null;
+    }
     const [lat, lon] = value;
     if (
       typeof lat === "number" &&
@@ -658,18 +889,27 @@ export function parseOverpassArea(input: unknown): OverpassArea | null {
   const a = input as Record<string, unknown>;
 
   if ("corridor" in a) {
-    if (!Array.isArray(a.corridor) || typeof a.radiusMeters !== "number") {
+    const polylines = wirePolylines(a.corridor);
+    if (!polylines || typeof a.radiusMeters !== "number") {
       return null;
     }
-    const corridor: LatLon[] = [];
-    for (const vertex of a.corridor) {
-      const point = coerceLatLon(vertex);
-      if (!point) {
-        return null;
+    const corridor: LatLon[][] = [];
+    for (const polyline of polylines) {
+      const points: LatLon[] = [];
+      for (const vertex of polyline) {
+        const point = coerceLatLon(vertex);
+        if (!point) {
+          return null;
+        }
+        points.push(point);
       }
-      corridor.push(point);
+      corridor.push(points);
     }
-    return { corridor, radiusMeters: a.radiusMeters };
+    // Keep the flat shape flat so single-polyline callers see what they sent.
+    return {
+      corridor: corridor.length === 1 ? corridor[0] : corridor,
+      radiusMeters: a.radiusMeters,
+    };
   }
 
   if ("bounds" in a) {
@@ -748,15 +988,11 @@ export function computeCumulativeDistances(
 export function buildRouteGeometry(
   route: LatLon[] | LatLon[][]
 ): RouteGeometry {
-  const polylines = toPolylines(route);
   const points: LatLon[] = [];
   const segmentBreaks = new Set<number>();
 
-  for (const polyline of polylines) {
-    const clean = polyline.filter(isFinitePoint);
-    if (clean.length === 0) {
-      continue;
-    }
+  // A corrupt point splits its track: the pieces either side are disjoint.
+  for (const clean of splitAtInvalidPoints(route)) {
     if (points.length > 0) {
       segmentBreaks.add(points.length - 1);
     }

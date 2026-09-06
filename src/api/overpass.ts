@@ -5,9 +5,12 @@ import { createRedisClient } from "./_redis";
 import {
   POI_TYPES,
   buildOverpassQuery,
+  isTransientOverpassError,
+  overpassPayloadError,
   parseOverpassArea,
   roundCoord,
   validateOverpassArea,
+  type LatLon,
   type OverpassArea,
   type POIType,
 } from "../lib/osm-poi";
@@ -34,6 +37,18 @@ const CACHE_TTL = parseInt(process.env.CACHE_TTL_SECONDS || "604800"); // 7 days
 const OVERPASS_TIMEOUT_SECONDS = 22;
 const FETCH_TIMEOUT_MS = 27000;
 
+// Wall-clock budget for the whole invocation. The Overpass fetch timeout is
+// shortened by whatever the earlier work (chiefly Redis) already spent, so a
+// slow or unreachable cache cannot push the fetch past maxDuration and have the
+// platform kill us before we can emit a structured error.
+const TOTAL_BUDGET_MS = 28000;
+const MIN_FETCH_TIMEOUT_MS = 5000;
+
+// Overpass etiquette asks every client to identify itself; the public instance
+// has been seen rejecting the default Node fetch agent outright.
+const OVERPASS_USER_AGENT =
+  "gpx-tools/2.0 (+https://github.com/eamon-b/gpx-tools)";
+
 // Upstash rejects values above 1 MB; stay under it with room for encoding
 // overhead rather than failing the request on an unusually dense area.
 const MAX_CACHE_BYTES = 900 * 1024;
@@ -59,11 +74,18 @@ function jsonResponse(
  */
 function canonicalizeArea(area: OverpassArea): OverpassArea {
   if ("corridor" in area) {
+    const round = (p: LatLon): LatLon => ({
+      lat: roundCoord(p.lat),
+      lon: roundCoord(p.lon),
+    });
+    // A corridor is one polyline or several. Keep whichever shape came in:
+    // the cache key is derived from this value, so reshaping a single-polyline
+    // request into the nested form would orphan every entry already stored.
+    const corridor: LatLon[] | LatLon[][] = Array.isArray(area.corridor[0])
+      ? (area.corridor as LatLon[][]).map((polyline) => polyline.map(round))
+      : (area.corridor as LatLon[]).map(round);
     return {
-      corridor: area.corridor.map((p) => ({
-        lat: roundCoord(p.lat),
-        lon: roundCoord(p.lon),
-      })),
+      corridor,
       radiusMeters: Math.round(area.radiusMeters),
     };
   }
@@ -160,6 +182,7 @@ async function checkRateLimit(ip: string): Promise<RateLimitResult> {
 }
 
 export default async function handler(req: Request): Promise<Response> {
+  const started = Date.now();
   const corsHeaders = getCorsHeaders(req);
 
   // Handle CORS preflight
@@ -262,13 +285,23 @@ export default async function handler(req: Request): Promise<Response> {
       timeoutSeconds: OVERPASS_TIMEOUT_SECONDS,
     });
 
+    // Whatever is left of the invocation budget, capped at the normal timeout
+    // and floored so we never hand Overpass an unusably short window.
+    const fetchTimeoutMs = Math.max(
+      MIN_FETCH_TIMEOUT_MS,
+      Math.min(FETCH_TIMEOUT_MS, TOTAL_BUDGET_MS - (Date.now() - started))
+    );
+
     let overpassResponse: Response;
     try {
       overpassResponse = await fetch(OVERPASS_ENDPOINT, {
         method: "POST",
         body: `data=${encodeURIComponent(query)}`,
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          "User-Agent": OVERPASS_USER_AGENT,
+        },
+        signal: AbortSignal.timeout(fetchTimeoutMs),
       });
     } catch (error) {
       const aborted =
@@ -328,6 +361,38 @@ export default async function handler(req: Request): Promise<Response> {
     }
 
     const data = await overpassResponse.text();
+
+    // A 200 from Overpass is not necessarily a result: a query that runs out of
+    // time or memory comes back as 200 with `{"elements":[],"remark":"runtime
+    // error: ..."}`, and an overloaded instance can answer with an HTML error
+    // page. Caching either would serve "there is nothing along your route" for
+    // a week, so validate before caching or returning.
+    let payload: unknown = null;
+    try {
+      payload = JSON.parse(data);
+    } catch {
+      payload = null;
+    }
+    const payloadError = overpassPayloadError(payload);
+    if (payloadError) {
+      logError("overpass:payload", payloadError, {
+        status: overpassResponse.status,
+        bytes: data.length,
+        snippet: data.slice(0, 200),
+      });
+      if (isTransientOverpassError(payloadError)) {
+        return jsonResponse(
+          {
+            error: payloadError,
+            retryAfter: DEFAULT_RETRY_AFTER_SECONDS,
+            resetIn: DEFAULT_RETRY_AFTER_SECONDS,
+          },
+          503,
+          { ...corsHeaders, "Retry-After": String(DEFAULT_RETRY_AFTER_SECONDS) }
+        );
+      }
+      return jsonResponse({ error: payloadError }, 502, corsHeaders);
+    }
 
     // Cache response (best effort; an oversize payload is simply not cached)
     if (Buffer.byteLength(data, "utf8") <= MAX_CACHE_BYTES) {

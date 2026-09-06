@@ -118,6 +118,7 @@ export {
   enrichRoute,
   exportPOIsToCSV,
   exportPOIsToGPX,
+  MAX_SEARCH_RADIUS_KM,
 } from "./poi-enrichment";
 export type {
   EnrichmentOptions,

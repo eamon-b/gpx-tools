@@ -11,7 +11,11 @@ import {
   roundCoord,
   poiKey,
   normalizeOverpassElements,
+  overpassPayloadError,
+  isTransientOverpassError,
   buildCorridorChunks,
+  packCorridorChunks,
+  corridorVertexCount,
   validateOverpassArea,
   parseOverpassArea,
   buildRouteGeometry,
@@ -118,6 +122,60 @@ describe("POI catalog", () => {
   });
 });
 
+describe("categorizePOI with preferred types", () => {
+  // A bus stop with a shelter satisfies both the transport and the camping
+  // rules. Without a preference the catalog order decides; with one, whatever
+  // the requested type's selector fetched is classified as that type.
+  const busShelter = { highway: "bus_stop", amenity: "shelter" };
+
+  it("keeps the catalog order when no preference is given", () => {
+    expect(categorizePOI(busShelter)).toBe("camping");
+  });
+
+  it("classifies a doubly-tagged feature as the requested type", () => {
+    expect(categorizePOI(busShelter, ["transport"])).toBe("transport");
+    expect(categorizePOI(busShelter, ["camping"])).toBe("camping");
+  });
+
+  it("breaks a tie inside the preferred set by catalog order", () => {
+    // POI_TYPES puts camping before transport, so requesting both is the same
+    // as requesting neither: the request order does not override the catalog.
+    expect(categorizePOI(busShelter, ["transport", "camping"])).toBe("camping");
+    expect(categorizePOI(busShelter, ["camping", "transport"])).toBe("camping");
+  });
+
+  it("runs the preferred fallback rules before the other types", () => {
+    // A cafe with a tap: resupply by default (specific rule beats fallback)...
+    const cafeWithTap = { amenity: "cafe", drinking_water: "yes" };
+    expect(categorizePOI(cafeWithTap)).toBe("resupply");
+    // ...water when only water was asked for, via the drinking_water fallback...
+    expect(categorizePOI(cafeWithTap, ["water"])).toBe("water");
+    // ...and resupply again when both are wanted, because inside the preferred
+    // set the non-fallback pass still runs first.
+    expect(categorizePOI(cafeWithTap, ["water", "resupply"])).toBe("resupply");
+  });
+
+  it("still falls through to the real category when nothing preferred matches", () => {
+    expect(categorizePOI({ amenity: "hospital" }, ["water"])).toBe("emergency");
+    expect(categorizePOI({ foo: "bar" }, ["water"])).toBeNull();
+  });
+
+  it("classifies every rule's own synthetic tags as its own type when preferred", () => {
+    for (const type of POI_TYPES) {
+      for (const rule of POI_CATALOG[type]) {
+        const tags: Record<string, string> = { [rule.key]: rule.value };
+        for (const req of rule.require ?? []) {
+          tags[req.key] = req.value ?? "yes";
+        }
+        expect(
+          categorizePOI(tags, [type]),
+          `${type}: ${rule.key}=${rule.value}`
+        ).toBe(type);
+      }
+    }
+  });
+});
+
 describe("getPOIName / getPOIDescription", () => {
   it("uses the name tag when present and derives one otherwise", () => {
     expect(getPOIName({ tags: { name: "My Hut" } })).toBe("My Hut");
@@ -149,7 +207,7 @@ describe("buildOverpassQuery", () => {
     const query = buildOverpassQuery({ corridor, radiusMeters: 2000 }, [
       "water",
     ]);
-    expect(query).toContain("[out:json][timeout:22];");
+    expect(query).toMatch(/^\[out:json\]\[timeout:22\](\[bbox:[^\]]+\])?;/);
     expect(query).toContain("nwr[");
     expect(query).not.toMatch(/^\s*node\[/m);
     expect(query.trimEnd().endsWith("out center;")).toBe(true);
@@ -190,6 +248,36 @@ describe("buildOverpassQuery", () => {
     expect(query).toContain("[timeout:60]");
   });
 
+  it("scopes a corridor query with a global bbox padded by the radius", () => {
+    const query = buildOverpassQuery(
+      { corridor: [{ lat: 27.6, lon: 86.2 }, { lat: 28.0, lon: 86.9 }], radiusMeters: 2500 },
+      ["water"]
+    );
+    const m = query.match(/\[bbox:(-?[\d.]+),(-?[\d.]+),(-?[\d.]+),(-?[\d.]+)\];/);
+    expect(m).not.toBeNull();
+    const [s, w, n, e] = m!.slice(1).map(Number);
+    // 2.5 km is ~0.0225 deg of latitude, a little more of longitude at 28N.
+    expect(s).toBeCloseTo(27.6 - 0.0225, 3);
+    expect(n).toBeCloseTo(28.0 + 0.0225, 3);
+    expect(w).toBeLessThan(86.2 - 0.024);
+    expect(e).toBeGreaterThan(86.9 + 0.024);
+    expect(w).toBeGreaterThan(86.2 - 0.03);
+  });
+
+  it("omits the bbox setting for bbox mode and for antimeridian corridors", () => {
+    const bboxQuery = buildOverpassQuery(
+      { bounds: { south: -38, north: -37, west: 144, east: 145 } },
+      ["water"]
+    );
+    expect(bboxQuery).not.toContain("[bbox:");
+    const wrap = buildOverpassQuery(
+      { corridor: [{ lat: 0, lon: 179.9 }, { lat: 0, lon: -179.9 }], radiusMeters: 1000 },
+      ["water"]
+    );
+    expect(wrap).not.toContain("[bbox:");
+    expect(wrap).toContain("(around:1000,0,179.9,0,-179.9)");
+  });
+
   it("does not repeat an identical statement across types", () => {
     const query = buildOverpassQuery(
       { bounds: { south: 0, north: 1, west: 0, east: 1 } },
@@ -199,12 +287,125 @@ describe("buildOverpassQuery", () => {
     expect(occurrences).toBe(1);
   });
 
-  it("ignores unknown types without throwing", () => {
+  it("throws rather than emitting an empty union", () => {
+    // `( );` is an Overpass syntax error, so an empty statement list has to be
+    // caught here instead of failing upstream with a parse error.
+    const bounds = { bounds: { south: 0, north: 1, west: 0, east: 1 } };
+    expect(() => buildOverpassQuery(bounds, [])).toThrow(/No POI types/);
+    expect(() =>
+      buildOverpassQuery(bounds, [
+        "nonsense" as unknown as (typeof POI_TYPES)[number],
+      ])
+    ).toThrow(/No POI types/);
+  });
+
+  it("skips an unknown type but still builds the known ones", () => {
     const query = buildOverpassQuery(
       { bounds: { south: 0, north: 1, west: 0, east: 1 } },
-      ["nonsense" as unknown as (typeof POI_TYPES)[number]]
+      ["water", "nonsense" as unknown as (typeof POI_TYPES)[number]]
     );
-    expect(query).toContain("out center;");
+    expect(query).toContain('["natural"="spring"]');
+    expect(query.trimEnd().endsWith("out center;")).toBe(true);
+  });
+
+  it("escapes the regex union for both the regex and the QL string literal", () => {
+    const query = buildOverpassQuery(
+      { bounds: { south: 0, north: 1, west: 0, east: 1 } },
+      ["water"]
+    );
+    expect(query).toContain('["amenity"~"^(drinking_water|water_point)$"]');
+    // No stray escaping of values that need none
+    expect(query).not.toContain("\\");
+  });
+
+  it("repeats every statement once per corridor polyline", () => {
+    const p1 = { lat: 0, lon: 0 };
+    const p2 = { lat: 0, lon: 0.01 };
+    const p3 = { lat: 1, lon: 1 };
+
+    const single = buildOverpassQuery(
+      { corridor: [p1, p2], radiusMeters: 500 },
+      ["water"]
+    );
+    const multi = buildOverpassQuery(
+      { corridor: [[p1, p2], [p3]], radiusMeters: 500 },
+      ["water"]
+    );
+
+    const count = (haystack: string, needle: string) =>
+      haystack.split(needle).length - 1;
+
+    for (const selector of [
+      '["amenity"~"^(drinking_water|water_point)$"]',
+      '["natural"="spring"]',
+      '["man_made"="water_tap"]',
+      '["drinking_water"="yes"]',
+    ]) {
+      expect(count(single, selector), selector).toBe(1);
+      expect(count(multi, selector), selector).toBe(2);
+    }
+
+    expect(multi).toContain("(around:500,0,0,0,0.01)");
+    expect(multi).toContain("(around:500,1,1)");
+    // A single-polyline corridor still renders exactly as the flat form does
+    expect(
+      buildOverpassQuery({ corridor: [[p1, p2]], radiusMeters: 500 }, ["water"])
+    ).toBe(single);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Payload errors
+// ---------------------------------------------------------------------------
+
+describe("overpassPayloadError", () => {
+  it("rejects a runtime-error remark returned with HTTP 200", () => {
+    const message = overpassPayloadError({
+      elements: [],
+      remark: "runtime error: Query timed out in queryid 1",
+    });
+    expect(message).toContain("runtime error: Query timed out in queryid 1");
+    expect(isTransientOverpassError(message!)).toBe(true);
+  });
+
+  it("rejects non-JSON and malformed payloads", () => {
+    expect(overpassPayloadError("<html>Error</html>")).toMatch(/non-JSON/);
+    expect(overpassPayloadError(null)).toMatch(/non-JSON/);
+    expect(overpassPayloadError({})).toMatch(/no elements array/);
+    expect(overpassPayloadError({ elements: "x" })).toMatch(
+      /no elements array/
+    );
+  });
+
+  it("accepts an empty but well-formed result", () => {
+    expect(overpassPayloadError({ elements: [] })).toBeNull();
+  });
+
+  it("ignores an informational remark", () => {
+    expect(
+      overpassPayloadError({
+        elements: [],
+        remark: "considered 1000 elements",
+      })
+    ).toBeNull();
+  });
+});
+
+describe("isTransientOverpassError", () => {
+  it("recognises the retryable conditions", () => {
+    expect(
+      isTransientOverpassError("Overpass runtime error: out of memory")
+    ).toBe(true);
+    expect(isTransientOverpassError("Query timed out")).toBe(true);
+    expect(isTransientOverpassError("server too busy")).toBe(true);
+    expect(isTransientOverpassError("rate_limited")).toBe(true);
+  });
+
+  it("does not retry a permanent failure", () => {
+    expect(
+      isTransientOverpassError("Overpass returned a non-JSON response")
+    ).toBe(false);
+    expect(isTransientOverpassError("parse error: line 3")).toBe(false);
   });
 });
 
@@ -353,6 +554,100 @@ describe("buildCorridorChunks", () => {
     expect(buildCorridorChunks([], 2000)).toEqual([]);
     expect(buildCorridorChunks([{ lat: NaN, lon: 0 }], 2000)).toEqual([]);
   });
+
+  it("terminates on a degenerate maxVertices instead of looping forever", () => {
+    // A chunk needs one fresh vertex beyond the one-vertex overlap, so any
+    // limit below 2 must be floored at 2 — otherwise the split never advances.
+    const route = zigzag(6);
+    for (const maxVertices of [0, 1, 1.5]) {
+      const chunks = buildCorridorChunks(route, 4, maxVertices);
+      expect(chunks.length, `maxVertices=${maxVertices}`).toBe(5);
+      for (const chunk of chunks) {
+        expect(chunk.length).toBeLessThanOrEqual(2);
+      }
+      // Still covers the whole route: chunks overlap by one vertex
+      const rebuilt = chunks.flatMap((c, i) => (i === 0 ? c : c.slice(1)));
+      expect(rebuilt, `maxVertices=${maxVertices}`).toEqual(route);
+    }
+  });
+
+  it("splits at a corrupt fix instead of welding its neighbours", () => {
+    // The two halves are ~110 km apart, far beyond the join gap, so a welded
+    // polyline would hand Overpass a corridor that was never walked.
+    const chunks = buildCorridorChunks(
+      [
+        { lat: 0, lon: 0 },
+        { lat: 0, lon: 0.01 },
+        { lat: NaN, lon: 0.5 },
+        { lat: 0, lon: 1 },
+        { lat: 0, lon: 1.01 },
+      ],
+      100
+    );
+    expect(chunks).toEqual([
+      [
+        { lat: 0, lon: 0 },
+        { lat: 0, lon: 0.01 },
+      ],
+      [
+        { lat: 0, lon: 1 },
+        { lat: 0, lon: 1.01 },
+      ],
+    ]);
+  });
+
+  it("chunks a polyline that only exceeds the limit after joining", () => {
+    // Neither half is over the 4-vertex limit, but the join makes one 8-vertex
+    // corridor, which then has to be split.
+    const a = zigzag(4);
+    const b = zigzag(4).map((p) => ({ lat: p.lat, lon: p.lon + 0.004 }));
+    const chunks = buildCorridorChunks([a, b], 4, 4, 200);
+
+    expect(chunks.map((c) => c.length)).toEqual([4, 4, 2]);
+    const rebuilt = chunks.flatMap((c, i) => (i === 0 ? c : c.slice(1)));
+    expect(rebuilt).toEqual([...a, ...b]);
+  });
+});
+
+describe("packCorridorChunks", () => {
+  const polyline = (n: number, lonOffset: number): LatLon[] =>
+    Array.from({ length: n }, (_, i) => ({
+      lat: 0,
+      lon: lonOffset + i * 0.001,
+    }));
+
+  it("packs consecutive polylines greedily up to the vertex limit", () => {
+    const a = polyline(3, 0);
+    const b = polyline(3, 1);
+    const c = polyline(3, 2);
+    expect(packCorridorChunks([a, b, c], 7)).toEqual([[a, b], [c]]);
+  });
+
+  it("gives an oversize polyline a group of its own", () => {
+    const a = polyline(3, 0);
+    const big = polyline(10, 1);
+    const c = polyline(3, 2);
+    expect(packCorridorChunks([a, big, c], 7)).toEqual([[a], [big], [c]]);
+  });
+
+  it("skips empty polylines and handles empty input", () => {
+    const a = polyline(2, 0);
+    expect(packCorridorChunks([[], a, []], 300)).toEqual([[a]]);
+    expect(packCorridorChunks([], 300)).toEqual([]);
+    expect(packCorridorChunks([[]], 300)).toEqual([]);
+  });
+});
+
+describe("corridorVertexCount", () => {
+  it("counts both the flat and the nested corridor shape", () => {
+    const flat: LatLon[] = [
+      { lat: 0, lon: 0 },
+      { lat: 0, lon: 1 },
+    ];
+    expect(corridorVertexCount(flat)).toBe(2);
+    expect(corridorVertexCount([flat, flat, [{ lat: 1, lon: 1 }]])).toBe(5);
+    expect(corridorVertexCount([])).toBe(0);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -446,6 +741,67 @@ describe("validateOverpassArea", () => {
       })
     ).toMatch(/finite number/);
   });
+
+  it("accepts a nested corridor of several polylines", () => {
+    expect(
+      validateOverpassArea({
+        corridor: [
+          [
+            [0, 0],
+            [0.1, 0.1],
+          ],
+          [
+            [1, 1],
+            [1.1, 1.1],
+          ],
+        ],
+        radiusMeters: 2000,
+      })
+    ).toBeNull();
+    expect(
+      validateOverpassArea({
+        corridor: [corridor, [{ lat: 1, lon: 1 }]],
+        radiusMeters: 2000,
+      })
+    ).toBeNull();
+  });
+
+  it("applies the vertex limit to the total across polylines", () => {
+    const half = Array.from({ length: 201 }, () => ({ lat: 0, lon: 0 }));
+    expect(
+      validateOverpassArea({ corridor: [half], radiusMeters: 100 })
+    ).toBeNull();
+    expect(
+      validateOverpassArea({ corridor: [half, half], radiusMeters: 100 })
+    ).toMatch(/too many vertices/);
+  });
+
+  it("rejects an empty inner polyline", () => {
+    expect(
+      validateOverpassArea({ corridor: [corridor, []], radiusMeters: 100 })
+    ).toMatch(/polylines must be non-empty/);
+  });
+
+  it("rejects a radius below one metre", () => {
+    expect(validateOverpassArea({ corridor, radiusMeters: 0.5 })).toMatch(
+      /positive/
+    );
+    expect(validateOverpassArea({ corridor, radiusMeters: 1e-7 })).toMatch(
+      /positive/
+    );
+    expect(validateOverpassArea({ corridor, radiusMeters: 1 })).toBeNull();
+  });
+
+  it("rejects malformed vertices", () => {
+    // A [lat, lon, ele] triple is not a coordinate pair
+    expect(
+      validateOverpassArea({ corridor: [[0, 0, 5]], radiusMeters: 100 })
+    ).toMatch(/\{lat, lon\} or \[lat, lon\]/);
+    // Mixing a bare pair with a nested polyline is ambiguous, so it is refused
+    expect(
+      validateOverpassArea({ corridor: [[1, 2], [[3, 4]]], radiusMeters: 100 })
+    ).toMatch(/\{lat, lon\} or \[lat, lon\]/);
+  });
 });
 
 describe("parseOverpassArea", () => {
@@ -476,6 +832,51 @@ describe("parseOverpassArea", () => {
     ).toBeNull();
     expect(parseOverpassArea(null)).toBeNull();
     expect(parseOverpassArea({})).toBeNull();
+  });
+
+  it("parses a nested corridor into LatLon[][]", () => {
+    expect(
+      parseOverpassArea({
+        corridor: [
+          [
+            [1, 2],
+            [3, 4],
+          ],
+          [[5, 6]],
+        ],
+        radiusMeters: 500,
+      })
+    ).toEqual({
+      corridor: [
+        [
+          { lat: 1, lon: 2 },
+          { lat: 3, lon: 4 },
+        ],
+        [{ lat: 5, lon: 6 }],
+      ],
+      radiusMeters: 500,
+    });
+  });
+
+  it("flattens a single nested polyline back to the flat form", () => {
+    // Single-polyline callers get back the shape they sent.
+    expect(
+      parseOverpassArea({
+        corridor: [
+          [
+            [1, 2],
+            [3, 4],
+          ],
+        ],
+        radiusMeters: 500,
+      })
+    ).toEqual({
+      corridor: [
+        { lat: 1, lon: 2 },
+        { lat: 3, lon: 4 },
+      ],
+      radiusMeters: 500,
+    });
   });
 });
 
@@ -550,13 +951,21 @@ describe("buildRouteGeometry", () => {
     }
   });
 
-  it("drops non-finite points", () => {
+  it("breaks the track at a non-finite point instead of welding across it", () => {
+    // The corrupt fix is dropped, but the points either side are NOT joined:
+    // the stretch between them was never walked.
     const geom = buildRouteGeometry([
       { lat: 0, lon: 0 },
       { lat: NaN, lon: 1 },
       { lat: 0, lon: 0.01 },
     ]);
-    expect(geom.points).toHaveLength(2);
+    expect(geom.points).toEqual([
+      { lat: 0, lon: 0 },
+      { lat: 0, lon: 0.01 },
+    ]);
+    expect([...geom.segmentBreaks]).toEqual([0]);
+    // The gap contributes no distance
+    expect(geom.cumulativeKm).toEqual([0, 0]);
   });
 });
 
@@ -816,6 +1225,53 @@ describe("nearestPointOnRoute", () => {
     expect(
       nearestPointOnRoute({ lat: 0.0001, lon: 0.008 }, geom).nearestPointIndex
     ).toBe(1);
+  });
+
+  it("measures across the antimeridian, not the long way round the globe", () => {
+    // A 2.2 km segment straddling lon 180. Without wrapping the longitude
+    // difference the segment looks 40,000 km long and the POI ends up half a
+    // planet away instead of 111 m off the trail.
+    const geom = buildRouteGeometry([
+      { lat: 0, lon: 179.99 },
+      { lat: 0, lon: -179.99 },
+    ]);
+    expect(geom.cumulativeKm[1]).toBeCloseTo(2.224, 2);
+
+    const result = nearestPointOnRoute({ lat: 0.001, lon: 179.995 }, geom);
+    expect(result.distanceKm).toBeCloseTo(0.1112, 3);
+    expect(result.segmentIndex).toBe(0);
+    expect(result.t).toBeCloseTo(0.25, 6);
+  });
+});
+
+describe("buildCorridorChunks simplification invariant", () => {
+  it("keeps every original point within radius/4 of the simplified corridor", () => {
+    // The whole point of the radius/4 Douglas-Peucker tolerance is that the
+    // corridor we hand Overpass still covers the real track: a POI within
+    // `radiusMeters` of the track must stay inside the `around:` corridor.
+    const radiusMeters = 200;
+    const route: LatLon[] = Array.from({ length: 2000 }, (_, i) => ({
+      lat: -37.8 + Math.sin(i * 0.11) * 0.01 + i * 0.000005,
+      lon: 144.9 + Math.cos(i * 0.07) * 0.008 + i * 0.00001,
+    }));
+
+    // One input polyline, so the chunks reassemble into one simplified line
+    // once the one-vertex overlaps are removed.
+    const chunks = buildCorridorChunks(route, radiusMeters, 100);
+    const simplified = chunks.flatMap((c, i) => (i === 0 ? c : c.slice(1)));
+    expect(chunks.length).toBeGreaterThan(1);
+    // 2000 dense points collapse to a few hundred without leaving the corridor
+    expect(simplified.length).toBeGreaterThan(1);
+    expect(simplified.length).toBeLessThan(route.length / 2);
+
+    const toleranceKm = radiusMeters / 4 / 1000;
+    for (const point of route) {
+      const { distanceKm } = bruteForceNearest(point, simplified, new Set());
+      expect(distanceKm, `point ${JSON.stringify(point)}`).toBeLessThanOrEqual(
+        // 1% of slack for the two projections disagreeing about cos(lat)
+        toleranceKm * 1.01
+      );
+    }
   });
 });
 

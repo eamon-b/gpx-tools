@@ -17,6 +17,7 @@ import {
   getPOIDescription,
   getPOIName,
   nearestPointOnRoute,
+  packCorridorChunks,
   poiKey,
   POI_TYPES,
   type LatLon,
@@ -76,11 +77,12 @@ export interface ChunkFailure {
 export interface EnrichmentResult {
   pois: EnrichedPOI[];
   byType: Record<POIType, EnrichedPOI[]>;
-  /** Corridor chunks that failed to fetch. Empty when everything succeeded. */
+  /** Queries that failed to fetch. Empty when everything succeeded. */
   failedChunks: ChunkFailure[];
   stats: {
     totalFound: number;
     byType: Record<POIType, number>;
+    /** Number of Overpass queries issued (corridor groups, not polylines). */
     queryChunks: number;
     failedChunks: number;
     queryTimeMs: number;
@@ -97,6 +99,22 @@ const DEFAULT_SEARCH_RADIUS_KM = 2;
  * over-fetching only costs a little bandwidth.
  */
 const QUERY_RADIUS_MARGIN = 1.25;
+
+/**
+ * Largest search radius that can still be queried honestly: 8 km, not the
+ * server's 10 km `around:` cap.
+ *
+ * The query radius is the search radius times QUERY_RADIUS_MARGIN, and above
+ * 8 km that padding is what gets clamped away — the corridor would then be
+ * queried at less than the requested distance and POIs the user asked for
+ * would silently go missing. Clamping the search radius instead keeps the
+ * margin intact, so what comes back really is everything within the radius.
+ */
+export const MAX_SEARCH_RADIUS_KM =
+  CORRIDOR_LIMITS.maxRadiusMeters / QUERY_RADIUS_MARGIN / 1000;
+
+/** Smallest usable search radius; below this a query returns nothing at all. */
+const MIN_SEARCH_RADIUS_KM = 0.01;
 
 function abortError(): Error {
   const error = new Error("Enrichment aborted");
@@ -117,11 +135,12 @@ function emptyByType<T>(make: () => T): Record<POIType, T> {
 /**
  * Enrich a route with POIs from OpenStreetMap.
  *
- * The route may be one polyline or several disjoint tracks. Chunks are fetched
- * sequentially on purpose: Overpass grants only a couple of slots per source IP
- * and the proxy shares one egress IP across all users, so parallel chunks would
- * mostly return 429s. A chunk that fails is recorded and skipped; only an
- * all-chunks failure throws.
+ * The route may be one polyline or several disjoint tracks. Its corridor is cut
+ * into chunks and those chunks are packed into as few queries as possible;
+ * the queries are issued sequentially on purpose, because Overpass grants only
+ * a couple of slots per source IP and the proxy shares one egress IP across all
+ * users, so parallel queries would mostly return 429s. A query that fails is
+ * recorded in `failedChunks` and skipped; only an all-queries failure throws.
  */
 export async function enrichRoute(
   route: LatLon[] | LatLon[][],
@@ -130,15 +149,22 @@ export async function enrichRoute(
 ): Promise<EnrichmentResult> {
   const startTime = Date.now();
   const { signal } = options;
+  const requestedRadiusKm =
+    options.searchRadiusKm ?? options.maxDistanceFromRoute;
   const searchRadiusKm =
-    options.searchRadiusKm ??
-    options.maxDistanceFromRoute ??
-    DEFAULT_SEARCH_RADIUS_KM;
+    typeof requestedRadiusKm === "number" &&
+    Number.isFinite(requestedRadiusKm) &&
+    requestedRadiusKm > 0
+      ? Math.min(
+          Math.max(requestedRadiusKm, MIN_SEARCH_RADIUS_KM),
+          MAX_SEARCH_RADIUS_KM
+        )
+      : DEFAULT_SEARCH_RADIUS_KM;
   const fetchPOIs = options.fetchPOIs ?? proxyPOIFetcher;
   const maxVertices = options.maxVerticesPerChunk ?? 300;
 
   const corridorRadiusMeters = Math.min(
-    Math.max(searchRadiusKm, 0) * 1000,
+    searchRadiusKm * 1000,
     CORRIDOR_LIMITS.maxRadiusMeters
   );
   const queryRadiusMeters = Math.min(
@@ -156,18 +182,24 @@ export async function enrichRoute(
   onProgress?.({ stage: "prepare", message: "Preparing route corridor..." });
 
   const geom = buildRouteGeometry(route);
-  const chunks = buildCorridorChunks(route, corridorRadiusMeters, maxVertices);
+  // Chunking splits long corridors; packing then merges the short ones back
+  // into shared queries, so a route with a dozen side trips costs one request
+  // rather than a dozen.
+  const groups = packCorridorChunks(
+    buildCorridorChunks(route, corridorRadiusMeters, maxVertices),
+    maxVertices
+  );
 
   const byType = emptyByType<EnrichedPOI[]>(() => []);
   const stats = {
     totalFound: 0,
     byType: emptyByType<number>(() => 0),
-    queryChunks: chunks.length,
+    queryChunks: groups.length,
     failedChunks: 0,
     queryTimeMs: 0,
   };
 
-  if (chunks.length === 0) {
+  if (groups.length === 0) {
     onProgress?.({ stage: "done", message: "Route has no usable points" });
     stats.queryTimeMs = Date.now() - startTime;
     return { pois: [], byType, failedChunks: [], stats };
@@ -176,23 +208,29 @@ export async function enrichRoute(
   const failedChunks: ChunkFailure[] = [];
   const unique = new Map<string, POI>();
 
-  for (let i = 0; i < chunks.length; i++) {
+  for (let i = 0; i < groups.length; i++) {
     throwIfAborted();
     onProgress?.({
       stage: "fetch",
       current: i + 1,
-      total: chunks.length,
-      message: `Fetching POIs (${i + 1}/${chunks.length})...`,
+      total: groups.length,
+      message: `Fetching POIs (area ${i + 1} of ${groups.length})...`,
     });
 
+    const group = groups[i];
     try {
       const chunkPOIs = await fetchPOIs(
-        { corridor: chunks[i], radiusMeters: queryRadiusMeters },
+        {
+          // Keep a single polyline flat: that is what most routes produce and
+          // it is the shape the server's cache key is built from.
+          corridor: group.length === 1 ? group[0] : group,
+          radiusMeters: queryRadiusMeters,
+        },
         options.types,
         signal
       );
       // Chunks overlap by a vertex and their radii overlap far more, so the
-      // same feature routinely comes back from several chunks.
+      // same feature routinely comes back from several queries.
       for (const poi of chunkPOIs) {
         const key = poiKey(poi);
         if (!unique.has(key)) {
@@ -200,7 +238,10 @@ export async function enrichRoute(
         }
       }
     } catch (error) {
-      if (signal?.aborted || (error as Error)?.name === "AbortError") {
+      // Only the caller's own signal means cancellation. An error merely
+      // *named* AbortError (a per-request timeout, say) is a chunk failure:
+      // treating it as a cancel would throw away the chunks that succeeded.
+      if (signal?.aborted) {
         throw abortError();
       }
       failedChunks.push({
@@ -210,9 +251,10 @@ export async function enrichRoute(
     }
   }
 
-  if (failedChunks.length === chunks.length) {
+  if (failedChunks.length === groups.length) {
+    const reasons = [...new Set(failedChunks.map((f) => f.error))];
     throw new Error(
-      `Failed to fetch POIs for all ${chunks.length} area${chunks.length === 1 ? "" : "s"}: ${failedChunks[0].error}`
+      `Failed to fetch POIs for all ${groups.length} area${groups.length === 1 ? "" : "s"}: ${reasons.join("; ")}`
     );
   }
 
@@ -231,7 +273,10 @@ export async function enrichRoute(
       continue;
     }
 
-    const category = categorizePOI(poi.tags);
+    // Prefer the requested types: whatever a requested selector matched is
+    // classified as that type (a sheltered bus stop asked for as Transport is
+    // transport, not camping).
+    const category = categorizePOI(poi.tags, options.types);
     if (!category || !options.types.includes(category)) {
       continue;
     }

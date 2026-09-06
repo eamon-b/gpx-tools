@@ -14,17 +14,25 @@ interface MockResponseInit {
   status?: number;
   body?: unknown;
   headers?: Record<string, string>;
+  /** Simulate a non-JSON body (an HTML error page): `json()` rejects. */
+  invalidJson?: boolean;
 }
 
 function mockResponse({
   status = 200,
   body = { elements: [] },
   headers = {},
+  invalidJson = false,
 }: MockResponseInit = {}) {
   return {
     ok: status >= 200 && status < 300,
     status,
-    json: async () => body,
+    json: async () => {
+      if (invalidJson) {
+        throw new SyntaxError("Unexpected token < in JSON at position 0");
+      }
+      return body;
+    },
     headers: {
       get: (name: string) =>
         headers[
@@ -254,6 +262,134 @@ describe("createOverpassFetcher", () => {
       fetcher(AREA, ["water"], AbortSignal.abort())
     ).rejects.toMatchObject({ name: "AbortError" });
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("sends an identifying User-Agent, overridable per fetcher", async () => {
+    const fetchMock = vi.fn(async () => mockResponse({ body: ELEMENTS }));
+    const headersOf = (call: number) =>
+      (fetchMock.mock.calls[call] as unknown as [string, RequestInit])[1]
+        .headers as Record<string, string>;
+
+    await createOverpassFetcher({
+      fetch: fetchMock as unknown as typeof fetch,
+      minDelayMs: 0,
+    })(AREA, ["water"]);
+    expect(headersOf(0)["User-Agent"]).toMatch(/^gpx-tools\/\d/);
+
+    await createOverpassFetcher({
+      fetch: fetchMock as unknown as typeof fetch,
+      minDelayMs: 0,
+      userAgent: "trail-maps/1.0 (+https://example.test)",
+    })(AREA, ["water"]);
+    expect(headersOf(1)["User-Agent"]).toBe(
+      "trail-maps/1.0 (+https://example.test)"
+    );
+  });
+
+  it("retries a 200 that carries a runtime-error remark, then throws it", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn(async () =>
+      mockResponse({
+        body: {
+          elements: [],
+          remark:
+            'runtime error: Query timed out in "query" at line 3 after 22 seconds.',
+        },
+      })
+    );
+    const fetcher = createOverpassFetcher({
+      fetch: fetchMock as unknown as typeof fetch,
+      minDelayMs: 10,
+      maxRetries: 2,
+    });
+
+    const promise = fetcher(AREA, ["water"]);
+    const assertion = expect(promise).rejects.toThrow(
+      /runtime error: Query timed out/
+    );
+
+    await vi.advanceTimersByTimeAsync(10000);
+    await assertion;
+    // The empty `elements` is a failure report, not an empty result.
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("does not retry a 200 whose body is not JSON", async () => {
+    const fetchMock = vi.fn(async () => mockResponse({ invalidJson: true }));
+    const fetcher = createOverpassFetcher({
+      fetch: fetchMock as unknown as typeof fetch,
+      minDelayMs: 0,
+      maxRetries: 3,
+    });
+
+    await expect(fetcher(AREA, ["water"])).rejects.toThrow(/non-JSON/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not retry a 200 without an elements array", async () => {
+    const fetchMock = vi.fn(async () => mockResponse({ body: { osm3s: {} } }));
+    const fetcher = createOverpassFetcher({
+      fetch: fetchMock as unknown as typeof fetch,
+      minDelayMs: 0,
+      maxRetries: 3,
+    });
+
+    await expect(fetcher(AREA, ["water"])).rejects.toThrow(/no elements array/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("clamps an hour-long Retry-After to two minutes", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        mockResponse({ status: 429, headers: { "Retry-After": "3600" } })
+      )
+      .mockResolvedValueOnce(mockResponse({ body: ELEMENTS }));
+
+    const fetcher = createOverpassFetcher({
+      fetch: fetchMock as unknown as typeof fetch,
+      minDelayMs: 0,
+      maxRetries: 1,
+    });
+
+    const promise = fetcher(AREA, ["water"]);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(119_000);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(2000);
+    await expect(promise).resolves.toHaveLength(2);
+  });
+
+  it("ignores a Retry-After of 0 and uses its own backoff", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        mockResponse({ status: 429, headers: { "Retry-After": "0" } })
+      )
+      .mockResolvedValueOnce(mockResponse({ body: ELEMENTS }));
+
+    const fetcher = createOverpassFetcher({
+      fetch: fetchMock as unknown as typeof fetch,
+      minDelayMs: 1000,
+      maxRetries: 1,
+    });
+
+    const promise = fetcher(AREA, ["water"]);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    // A literal 0 would mean retrying instantly; the backoff still applies.
+    await vi.advanceTimersByTimeAsync(900);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(200);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await expect(promise).resolves.toHaveLength(2);
   });
 
   it("keeps working after a failed request (the queue is not poisoned)", async () => {
