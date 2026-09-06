@@ -5,6 +5,7 @@ import {
   exportPOIsToGPX,
   computeCumulativeDistances,
   getPOIName,
+  MAX_SEARCH_RADIUS_KM,
   type EnrichedPOI,
   type EnrichmentProgress,
 } from "./poi-enrichment";
@@ -33,6 +34,13 @@ function createRoute(numPoints: number, lonStep = 0.001): LatLon[] {
 /** A fetcher that returns the same POIs for every chunk. */
 function fetcherReturning(pois: POI[]): POIFetcher {
   return vi.fn(async () => pois);
+}
+
+/** Three disjoint 20-point tracks, ~111 km apart, one per latitude. */
+function threeTracks(): LatLon[][] {
+  return [0, 1, 2].map((lat) =>
+    Array.from({ length: 20 }, (_, i) => ({ lat, lon: i * 0.001 }))
+  );
 }
 
 describe("enrichRoute", () => {
@@ -184,10 +192,9 @@ describe("enrichRoute", () => {
   });
 
   it("returns partial results when one chunk fails (regression)", async () => {
-    // Three disjoint tracks produce three corridor chunks
-    const tracks = [0, 1, 2].map((lat) =>
-      Array.from({ length: 20 }, (_, i) => ({ lat, lon: i * 0.001 }))
-    );
+    // Three disjoint tracks, one query each (maxVerticesPerChunk: 2 stops the
+    // packer from folding them into a single query).
+    const tracks = threeTracks();
 
     const fetchPOIs = vi
       .fn<POIFetcher>()
@@ -200,6 +207,7 @@ describe("enrichRoute", () => {
     const result = await enrichRoute(tracks, {
       types: ["water", "camping"],
       searchRadiusKm: 2,
+      maxVerticesPerChunk: 2,
       fetchPOIs,
     });
 
@@ -264,7 +272,7 @@ describe("enrichRoute", () => {
     expect(fetchPOIs).not.toHaveBeenCalled();
   });
 
-  it("surfaces a fetcher abort as an AbortError rather than a failed chunk", async () => {
+  it("surfaces a fetcher abort as an AbortError when the caller really cancelled", async () => {
     const controller = new AbortController();
     const fetchPOIs = vi.fn<POIFetcher>().mockImplementation(async () => {
       controller.abort();
@@ -280,6 +288,154 @@ describe("enrichRoute", () => {
         signal: controller.signal,
       })
     ).rejects.toMatchObject({ name: "AbortError" });
+  });
+
+  it("records an AbortError-named failure as a failed chunk when nobody cancelled", async () => {
+    // A per-request timeout surfaces as an error named AbortError. Treating it
+    // as a cancellation would throw away the chunks that did succeed.
+    const timeout = new Error("Request timed out after 30 s");
+    timeout.name = "AbortError";
+
+    const fetchPOIs = vi
+      .fn<POIFetcher>()
+      .mockRejectedValueOnce(timeout)
+      .mockResolvedValue([makePOI(1, 1, 0.005, { amenity: "drinking_water" })]);
+
+    const result = await enrichRoute(threeTracks(), {
+      types: ["water"],
+      searchRadiusKm: 2,
+      maxVerticesPerChunk: 2,
+      fetchPOIs,
+    });
+
+    expect(result.failedChunks).toEqual([
+      { chunkIndex: 0, error: "Request timed out after 30 s" },
+    ]);
+    expect(result.pois.map((p) => p.id)).toEqual([1]);
+    expect(result.stats.failedChunks).toBe(1);
+  });
+
+  it("aborts mid-run between chunks", async () => {
+    const controller = new AbortController();
+    const fetchPOIs = vi.fn<POIFetcher>().mockImplementation(async () => {
+      controller.abort();
+      return [];
+    });
+
+    await expect(
+      enrichRoute(threeTracks(), {
+        types: ["water"],
+        maxVerticesPerChunk: 2,
+        fetchPOIs,
+        signal: controller.signal,
+      })
+    ).rejects.toMatchObject({ name: "AbortError" });
+
+    // Chunk 1 resolved; the loop stopped before issuing chunk 2.
+    expect(fetchPOIs).toHaveBeenCalledTimes(1);
+  });
+
+  it("packs disjoint short tracks into a single query", async () => {
+    const fetchPOIs = vi.fn<POIFetcher>().mockResolvedValue([]);
+    const tracks = [0, 1, 2, 3].map((lat) =>
+      Array.from({ length: 20 }, (_, i) => ({ lat, lon: i * 0.001 }))
+    );
+
+    const result = await enrichRoute(tracks, {
+      types: ["water"],
+      searchRadiusKm: 2,
+      fetchPOIs,
+    });
+
+    expect(fetchPOIs).toHaveBeenCalledTimes(1);
+    expect(result.stats.queryChunks).toBe(1);
+
+    const [area] = fetchPOIs.mock.calls[0];
+    expect("corridor" in area).toBe(true);
+    if ("corridor" in area) {
+      // Four separate polylines in one query, not one welded phantom corridor.
+      expect(Array.isArray(area.corridor[0])).toBe(true);
+      expect(area.corridor).toHaveLength(4);
+    }
+  });
+
+  it("fits a long track plus a far side trip in one query when under the vertex cap", async () => {
+    // A zigzag survives Douglas-Peucker, so the main track keeps many vertices.
+    const main = Array.from({ length: 40 }, (_, i) => ({
+      lat: (i % 2) * 0.01,
+      lon: i * 0.01,
+    }));
+    const sideTrip = Array.from({ length: 10 }, (_, i) => ({
+      lat: 5,
+      lon: i * 0.01,
+    }));
+
+    const fetchPOIs = vi.fn<POIFetcher>().mockResolvedValue([]);
+    await enrichRoute([main, sideTrip], {
+      types: ["water"],
+      searchRadiusKm: 2,
+      fetchPOIs,
+    });
+
+    expect(fetchPOIs).toHaveBeenCalledTimes(1);
+    const [area] = fetchPOIs.mock.calls[0];
+    if (!("corridor" in area)) throw new Error("expected a corridor");
+    const polylines = area.corridor as LatLon[][];
+    expect(Array.isArray(polylines[0])).toBe(true);
+    expect(polylines).toHaveLength(2);
+    expect(polylines[0].length).toBeGreaterThan(2);
+    const vertices = polylines.reduce((n, p) => n + p.length, 0);
+    expect(vertices).toBeLessThanOrEqual(300);
+  });
+
+  it("classifies a sheltered bus stop as transport when transport was requested", async () => {
+    const result = await enrichRoute(createRoute(50), {
+      types: ["transport"],
+      fetchPOIs: fetcherReturning([
+        makePOI(1, 0, 0.01, { highway: "bus_stop", amenity: "shelter" }),
+      ]),
+    });
+
+    expect(result.pois).toHaveLength(1);
+    expect(result.pois[0].category).toBe("transport");
+    expect(result.byType.transport.map((p) => p.id)).toEqual([1]);
+  });
+
+  it("clamps an over-large search radius to MAX_SEARCH_RADIUS_KM", async () => {
+    const fetchPOIs = vi.fn<POIFetcher>().mockResolvedValue([
+      // ~7 km off-route: inside the clamped 8 km radius.
+      makePOI(1, 0.063, 0.05, { amenity: "drinking_water" }),
+      // ~9 km off-route: outside it.
+      makePOI(2, 0.081, 0.05, { amenity: "drinking_water" }),
+    ]);
+
+    const result = await enrichRoute(createRoute(100), {
+      types: ["water"],
+      searchRadiusKm: 20,
+      fetchPOIs,
+    });
+
+    expect(MAX_SEARCH_RADIUS_KM).toBe(8);
+    const [area] = fetchPOIs.mock.calls[0];
+    if (!("corridor" in area)) throw new Error("expected a corridor");
+    // 8 km x the 1.25 query margin, exactly the server's `around:` cap.
+    expect(area.radiusMeters).toBe(10000);
+
+    expect(result.pois.map((p) => p.id)).toEqual([1]);
+  });
+
+  it("falls back to the default radius for a nonsensical one", async () => {
+    const pois = [makePOI(1, 0.027, 0.05, { amenity: "drinking_water" })]; // ~3 km off-route
+
+    for (const searchRadiusKm of [0, -5, NaN]) {
+      const result = await enrichRoute(createRoute(100), {
+        types: ["water"],
+        searchRadiusKm,
+        fetchPOIs: fetcherReturning(pois),
+      });
+      // The 2 km default, not "everything" and not "nothing".
+      expect(result.pois).toHaveLength(0);
+    }
   });
 
   it("handles multi-track routes without measuring across the gap", async () => {

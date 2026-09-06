@@ -10,12 +10,25 @@
 
 import {
   buildOverpassQuery,
+  isTransientOverpassError,
   normalizeOverpassElements,
+  overpassPayloadError,
   type OverpassArea,
   type OverpassElement,
   type POI,
   type POIType,
 } from "./osm-poi.js";
+
+/** Overpass etiquette asks clients to identify themselves. */
+const DEFAULT_USER_AGENT =
+  "gpx-tools/2.0 (+https://github.com/eamon-b/gpx-tools)";
+
+/**
+ * Ceiling on a server-supplied Retry-After. Overpass occasionally answers with
+ * a delay measured in hours; a build script should back off and move on, not
+ * park a process for the afternoon.
+ */
+const MAX_RETRY_AFTER_MS = 120_000;
 
 export interface OverpassFetcherOptions {
   /** Overpass instance. Default the main public endpoint. */
@@ -28,6 +41,8 @@ export interface OverpassFetcherOptions {
   timeoutSeconds?: number;
   /** Retries after a retryable failure. Default 2, exponential backoff, honours Retry-After. */
   maxRetries?: number;
+  /** `User-Agent` sent with every request. Overpass etiquette asks for an identifying one. */
+  userAgent?: string;
 }
 
 /** How a caller obtains POIs for an area — proxy-backed or direct Overpass. */
@@ -65,18 +80,28 @@ function delay(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
-/** Parse a Retry-After header (delta-seconds or HTTP-date) into milliseconds. */
+/**
+ * Parse a Retry-After header (delta-seconds or HTTP-date) into milliseconds,
+ * clamped to `MAX_RETRY_AFTER_MS`.
+ *
+ * Returns null - "use the caller's own backoff" - for anything unusable,
+ * including a delay of zero or a date already in the past. Honouring a literal
+ * `Retry-After: 0` would mean retrying with no pause at all, which is exactly
+ * the hammering the header exists to prevent.
+ */
 function parseRetryAfter(value: string | null | undefined): number | null {
   if (!value) {
     return null;
   }
+  const clamp = (ms: number) =>
+    ms > 0 ? Math.min(ms, MAX_RETRY_AFTER_MS) : null;
   const seconds = Number(value);
   if (Number.isFinite(seconds)) {
-    return Math.max(0, seconds * 1000);
+    return clamp(seconds * 1000);
   }
   const when = Date.parse(value);
   if (Number.isFinite(when)) {
-    return Math.max(0, when - Date.now());
+    return clamp(when - Date.now());
   }
   return null;
 }
@@ -97,6 +122,7 @@ export function createOverpassFetcher(
   const minDelayMs = opts.minDelayMs ?? 2000;
   const timeoutSeconds = opts.timeoutSeconds ?? 22;
   const maxRetries = opts.maxRetries ?? 2;
+  const userAgent = opts.userAgent ?? DEFAULT_USER_AGENT;
   // Give Overpass its full server-side budget plus slack for transfer before
   // giving up on the socket, otherwise we abort answers that were about to land.
   const httpTimeoutMs = (timeoutSeconds + 5) * 1000;
@@ -140,26 +166,44 @@ export function createOverpassFetcher(
         const response = await doFetch(endpoint, {
           method: "POST",
           body: `data=${encodeURIComponent(query)}`,
-          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          headers: {
+            "Content-Type": "application/x-www-form-urlencoded",
+            "User-Agent": userAgent,
+          },
           signal: controller.signal,
         });
 
         if (response.ok) {
-          const data = (await response.json()) as {
-            elements?: OverpassElement[];
-          };
-          return normalizeOverpassElements(data?.elements);
-        }
-
-        lastError = new Error(`Overpass request failed: ${response.status}`);
-        // 429 (no free slot) and 5xx (incl. the 504 Overpass returns when a
-        // query outruns its timeout) are the "come back later" answers.
-        if (response.status === 429 || response.status >= 500) {
-          retryDelayMs =
-            parseRetryAfter(response.headers?.get?.("Retry-After")) ??
-            retryDelayMs;
+          // A 200 is not automatically a result: Overpass reports a query that
+          // ran out of time or memory as 200 with a `remark`, and a struggling
+          // instance can answer with an HTML error page. Both are failed
+          // attempts, retryable or not depending on what went wrong.
+          let payload: unknown = null;
+          try {
+            payload = await response.json();
+          } catch {
+            payload = null;
+          }
+          const payloadError = overpassPayloadError(payload);
+          if (!payloadError) {
+            const data = payload as { elements?: OverpassElement[] };
+            return normalizeOverpassElements(data?.elements);
+          }
+          lastError = new Error(`Overpass request failed: ${payloadError}`);
+          if (!isTransientOverpassError(payloadError)) {
+            fatal = lastError;
+          }
         } else {
-          fatal = lastError;
+          lastError = new Error(`Overpass request failed: ${response.status}`);
+          // 429 (no free slot) and 5xx (incl. the 504 Overpass returns when a
+          // query outruns its timeout) are the "come back later" answers.
+          if (response.status === 429 || response.status >= 500) {
+            retryDelayMs =
+              parseRetryAfter(response.headers?.get?.("Retry-After")) ??
+              retryDelayMs;
+          } else {
+            fatal = lastError;
+          }
         }
       } catch (error) {
         if (signal?.aborted) {

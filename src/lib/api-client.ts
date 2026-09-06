@@ -1,7 +1,9 @@
 import {
   normalizeOverpassElements,
+  overpassPayloadError,
   roundCoord,
   type BBox,
+  type LatLon,
   type OverpassArea,
   type OverpassElement,
   type POI,
@@ -11,15 +13,33 @@ import type { POIFetcher } from "./overpass-client.js";
 
 const API_BASE = "/api";
 
+/** Per-attempt HTTP timeout. Matches the proxy's own 30 s function budget. */
+const ATTEMPT_TIMEOUT_MS = 30000;
+
+/**
+ * Upper bound on a server-specified retry delay.
+ *
+ * `resetIn`/`retryAfter` come from a response body we do not control: a buggy
+ * (or hostile) proxy answering `retryAfter: 86400` must not park the browser
+ * for a day, and a non-numeric value must never reach `setTimeout` as NaN.
+ */
+const MAX_SERVER_DELAY_SECONDS = 120;
+
 /**
  * Wire format for POST /api/overpass.
  *
  * The area is spread flat at the top level (rather than nested under `area`)
  * so the serverless handler can validate a single object, and corridors travel
  * as compact `[lat, lon]` pairs to keep the payload small on long routes.
+ * A corridor is one polyline (`[[lat, lon], ...]`) or several
+ * (`[[[lat, lon], ...], ...]`); the server's vertex limit applies to the total.
  */
 export type POIRequest =
-  | { corridor: [number, number][]; radiusMeters: number; types: POIType[] }
+  | {
+      corridor: [number, number][] | [number, number][][];
+      radiusMeters: number;
+      types: POIType[];
+    }
   | { bounds: BBox; types: POIType[] };
 
 interface ElevationResult {
@@ -47,23 +67,75 @@ function calculateBackoff(attempt: number, options: RetryOptions): number {
   return Math.min(exponentialDelay + jitter, options.maxDelayMs);
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 function abortError(): Error {
   const error = new Error("Aborted");
   error.name = "AbortError";
   return error;
 }
 
+/**
+ * Sleep that rejects with an AbortError as soon as `signal` fires, so pressing
+ * Cancel during a backoff wait stops right away instead of at the end of it.
+ */
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (!(ms > 0)) {
+    return signal?.aborted ? Promise.reject(abortError()) : Promise.resolve();
+  }
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(abortError());
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(abortError());
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+/**
+ * Retry delay (seconds) the server asked for, or undefined when it did not ask
+ * for a usable one. Only a finite positive number counts, and it is clamped:
+ * see MAX_SERVER_DELAY_SECONDS.
+ */
+function serverDelaySeconds(body: unknown): number | undefined {
+  if (!body || typeof body !== "object") {
+    return undefined;
+  }
+  const { resetIn, retryAfter } = body as {
+    resetIn?: unknown;
+    retryAfter?: unknown;
+  };
+  for (const value of [resetIn, retryAfter]) {
+    if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+      return Math.min(value, MAX_SERVER_DELAY_SECONDS);
+    }
+  }
+  return undefined;
+}
+
+/** Round one polyline's vertices into the compact `[lat, lon]` wire form. */
+function toWireVertices(polyline: LatLon[]): [number, number][] {
+  return polyline.map(
+    (p) => [roundCoord(p.lat), roundCoord(p.lon)] as [number, number]
+  );
+}
+
 /** Turn an OverpassArea into the flat wire body, rounding coordinates. */
 export function toPOIRequest(area: OverpassArea, types: POIType[]): POIRequest {
   if ("corridor" in area) {
+    const corridor = area.corridor;
+    // One polyline or several: keep whichever shape the caller sent.
+    const nested = corridor.length > 0 && Array.isArray(corridor[0]);
     return {
-      corridor: area.corridor.map(
-        (p) => [roundCoord(p.lat), roundCoord(p.lon)] as [number, number]
-      ),
+      corridor: nested
+        ? (corridor as LatLon[][]).map(toWireVertices)
+        : toWireVertices(corridor as LatLon[]),
       radiusMeters: Math.round(area.radiusMeters),
       types,
     };
@@ -117,59 +189,79 @@ export class APIClient {
       }
 
       try {
-        // Per-attempt 30s timeout, combined with the caller's cancellation signal
+        // Per-attempt timeout, combined with the caller's cancellation signal
         // so an aborted enrichment stops immediately instead of after the timeout.
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 30000);
+        let timedOut = false;
+        const timeoutId = setTimeout(() => {
+          timedOut = true;
+          controller.abort();
+        }, ATTEMPT_TIMEOUT_MS);
         const onOuterAbort = () => controller.abort();
         signal?.addEventListener("abort", onOuterAbort, { once: true });
 
-        let response: Response;
+        // The timer and the abort listener are torn down only once the body has
+        // been read: a response whose body stalls mid-stream must still hit the
+        // timeout, and Cancel must still interrupt it.
         try {
-          response = await fetch(url, {
+          const response = await fetch(url, {
             ...options,
             signal: controller.signal,
           });
+
+          if (response.ok) {
+            return await parseResponse(response);
+          }
+
+          // Handle specific error codes
+          const errorBody = await response
+            .json()
+            .catch(() => ({ error: "Unknown error" }));
+          const serverDelay = serverDelaySeconds(errorBody);
+
+          if (response.status === 429) {
+            const retryAfter = serverDelay ?? 60;
+            throw new APIError(
+              `Rate limited. Try again in ${retryAfter} seconds.`,
+              429,
+              retryAfter,
+              true
+            );
+          }
+
+          if (response.status >= 500) {
+            throw new APIError(
+              errorBody.error || `Server error: ${response.status}`,
+              response.status,
+              // 503 from the proxy carries the same "come back in N s" hint.
+              serverDelay,
+              true // Server errors are retryable
+            );
+          }
+
+          // Client errors (4xx except 429) are not retryable
+          throw new APIError(
+            errorBody.error || `Request failed: ${response.status}`,
+            response.status,
+            undefined,
+            false
+          );
+        } catch (error) {
+          // Our own timeout, not the caller's Cancel: report it as a retryable
+          // APIError so nothing downstream mistakes it for user cancellation.
+          if (timedOut && !signal?.aborted && !(error instanceof APIError)) {
+            throw new APIError(
+              `Request timed out after ${ATTEMPT_TIMEOUT_MS / 1000} s`,
+              0,
+              undefined,
+              true
+            );
+          }
+          throw error;
         } finally {
           clearTimeout(timeoutId);
           signal?.removeEventListener("abort", onOuterAbort);
         }
-
-        if (response.ok) {
-          return await parseResponse(response);
-        }
-
-        // Handle specific error codes
-        const errorBody = await response
-          .json()
-          .catch(() => ({ error: "Unknown error" }));
-
-        if (response.status === 429) {
-          const retryAfter = errorBody.resetIn || 60;
-          throw new APIError(
-            `Rate limited. Try again in ${retryAfter} seconds.`,
-            429,
-            retryAfter,
-            true
-          );
-        }
-
-        if (response.status >= 500) {
-          throw new APIError(
-            errorBody.error || `Server error: ${response.status}`,
-            response.status,
-            undefined,
-            true // Server errors are retryable
-          );
-        }
-
-        // Client errors (4xx except 429) are not retryable
-        throw new APIError(
-          errorBody.error || `Request failed: ${response.status}`,
-          response.status,
-          undefined,
-          false
-        );
       } catch (error) {
         // Caller cancellation is final; never burn retries on it.
         if (signal?.aborted) {
@@ -188,13 +280,12 @@ export class APIClient {
           break;
         }
 
-        // Handle rate limiting with server-specified delay
-        if (error instanceof APIError && error.retryAfter) {
-          await sleep(error.retryAfter * 1000);
-        } else {
-          // Timeout, network error or server error - use backoff
-          await sleep(calculateBackoff(attempt, this.retryOptions));
-        }
+        // Honour a server-specified delay (429/503); otherwise back off.
+        const delayMs =
+          error instanceof APIError && error.retryAfter
+            ? error.retryAfter * 1000
+            : calculateBackoff(attempt, this.retryOptions);
+        await sleep(delayMs, signal);
       }
     }
 
@@ -220,9 +311,17 @@ export class APIClient {
         body: JSON.stringify(toPOIRequest(area, types)),
       },
       async (response) => {
-        const data = (await response.json()) as {
+        const data = (await response.json().catch(() => null)) as {
           elements?: OverpassElement[];
-        };
+        } | null;
+        // Overpass reports runtime failures with HTTP 200 and a `remark`. The
+        // proxy turns those into 503s, but a stale cached payload or a
+        // direct-to-Overpass base URL can still deliver one: retry it rather
+        // than telling the user there is nothing along their route.
+        const payloadError = overpassPayloadError(data);
+        if (payloadError) {
+          throw new APIError(payloadError, response.status, undefined, true);
+        }
         return normalizeOverpassElements(data?.elements);
       },
       signal

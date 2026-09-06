@@ -156,11 +156,55 @@ describe("overpass handler: querying", () => {
     );
     expect(String(init.body).startsWith("data=")).toBe(true);
 
+    expect((init.headers as Record<string, string>)["User-Agent"]).toMatch(
+      /^gpx-tools\/\d/
+    );
+
     const query = sentQuery(fn);
     expect(query).toContain("around:2000");
     expect(query).toContain("nwr");
     expect(query).toContain("out center");
     expect(query).toContain("[timeout:22]");
+  });
+
+  it("repeats every selector once per polyline of a multi-polyline corridor", async () => {
+    const fn = fetchMock(overpassOk());
+
+    const res = await handler(
+      post({
+        corridor: [[[-37.8136, 144.9631]], [[-37.9, 145.0]]],
+        radiusMeters: 2000,
+        types: ["water"],
+      })
+    );
+
+    expect(res.status).toBe(200);
+    const query = sentQuery(fn);
+    // One `around:` per polyline, and every selector emitted against both.
+    expect(query.match(/\["natural"="spring"\]/g)).toHaveLength(2);
+    expect(query.match(/\["man_made"="water_tap"\]/g)).toHaveLength(2);
+    expect(query).toContain("(around:2000,-37.8136,144.9631)");
+    expect(query).toContain("(around:2000,-37.9,145)");
+  });
+
+  it("keys a split corridor separately from the same vertices as one polyline", async () => {
+    fetchMock(overpassOk());
+
+    // Same two vertices, but as one corridor versus two disjoint ones: the
+    // queries differ, so the cache entries must too.
+    await handler(
+      post({ corridor: CORRIDOR, radiusMeters: 2000, types: ["water"] })
+    );
+    await handler(
+      post({
+        corridor: [[CORRIDOR[0]], [CORRIDOR[1]]],
+        radiusMeters: 2000,
+        types: ["water"],
+      })
+    );
+
+    const [flat, split] = redisMock.get.mock.calls.map((c) => c[0]);
+    expect(split).not.toBe(flat);
   });
 
   it("supports the bbox fallback body", async () => {
@@ -252,8 +296,45 @@ describe("overpass handler: caching", () => {
     expect(first).toBe(second);
   });
 
+  it("returns a cached body byte-for-byte", async () => {
+    const fn = fetchMock(overpassOk());
+    // Unusual spacing: a re-serialised body would not survive this.
+    const stored = '{\n  "elements" : [ {"id": 7} ]\n}\n';
+    redisMock.get.mockResolvedValue(stored);
+
+    const res = await handler(
+      post({ corridor: CORRIDOR, radiusMeters: 2000, types: ["water"] })
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("X-Cache")).toBe("HIT");
+    await expect(res.text()).resolves.toBe(stored);
+    expect(fn).not.toHaveBeenCalled();
+  });
+
+  it("returns a fresh body byte-for-byte", async () => {
+    const body = '{  "elements" :[]  }';
+    fetchMock(
+      new Response(body, {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      })
+    );
+
+    const res = await handler(
+      post({ corridor: CORRIDOR, radiusMeters: 2000, types: ["water"] })
+    );
+
+    await expect(res.text()).resolves.toBe(body);
+    expect(redisMock.set.mock.calls[0][1]).toBe(body);
+  });
+
   it("does not cache payloads above the Upstash value limit", async () => {
-    const huge = JSON.stringify({ blob: "x".repeat(950 * 1024) });
+    const huge = JSON.stringify({
+      elements: [
+        { id: 1, type: "node", tags: { note: "x".repeat(950 * 1024) } },
+      ],
+    });
     fetchMock(
       new Response(huge, {
         status: 200,
@@ -383,6 +464,57 @@ describe("overpass handler: upstream errors", () => {
     expect(res.headers.get("Retry-After")).toBe("30");
     const json = (await res.json()) as { resetIn: number };
     expect(json.resetIn).toBe(30);
+  });
+
+  it("maps a 200 carrying a runtime-error remark to 503 and caches nothing", async () => {
+    fetchMock(
+      overpassOk({
+        elements: [],
+        remark:
+          'runtime error: Query timed out in "query" at line 3 after 22 seconds.',
+      })
+    );
+
+    const res = await handler(
+      post({ corridor: CORRIDOR, radiusMeters: 2000, types: ["water"] })
+    );
+
+    expect(res.status).toBe(503);
+    expect(res.headers.get("Retry-After")).toBe("30");
+    const json = (await res.json()) as { error: string; resetIn: number };
+    expect(json.error).toMatch(/runtime error: Query timed out/);
+    expect(json.resetIn).toBe(30);
+    // An empty result cached for a week would claim the route has no water.
+    expect(redisMock.set).not.toHaveBeenCalled();
+  });
+
+  it("maps a 200 with an HTML body to 502 and caches nothing", async () => {
+    fetchMock(
+      new Response("<html><body><h1>502 Bad Gateway</h1></body></html>", {
+        status: 200,
+        headers: { "Content-Type": "text/html" },
+      })
+    );
+
+    const res = await handler(
+      post({ corridor: CORRIDOR, radiusMeters: 2000, types: ["water"] })
+    );
+
+    expect(res.status).toBe(502);
+    const json = (await res.json()) as { error: string };
+    expect(json.error).toMatch(/non-JSON/);
+    expect(redisMock.set).not.toHaveBeenCalled();
+  });
+
+  it("maps a 200 without an elements array to 502", async () => {
+    fetchMock(overpassOk({ osm3s: { timestamp_osm_base: "2026-01-01" } }));
+
+    const res = await handler(
+      post({ corridor: CORRIDOR, radiusMeters: 2000, types: ["water"] })
+    );
+
+    expect(res.status).toBe(502);
+    expect(redisMock.set).not.toHaveBeenCalled();
   });
 
   it("maps a network failure to 502", async () => {
