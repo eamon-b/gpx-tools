@@ -19,12 +19,18 @@ export { escapeXml };
 // ---------------------------------------------------------------------------
 
 export type POIType =
-  "water" | "camping" | "resupply" | "transport" | "emergency";
+  | "water"
+  | "camping"
+  | "resupply"
+  | "restaurant"
+  | "transport"
+  | "emergency";
 
 export const POI_TYPES: readonly POIType[] = [
   "water",
   "camping",
   "resupply",
+  "restaurant",
   "transport",
   "emergency",
 ] as const;
@@ -32,7 +38,8 @@ export const POI_TYPES: readonly POIType[] = [
 export const POI_TYPE_LABELS: Record<POIType, string> = {
   water: "Water Sources",
   camping: "Camping & Shelters",
-  resupply: "Resupply (Shops & Food)",
+  resupply: "Resupply (Shops)",
+  restaurant: "Restaurants & Cafes",
   transport: "Transport",
   emergency: "Emergency Services",
 };
@@ -66,7 +73,7 @@ export const POI_CATALOG: Record<POIType, POITagRule[]> = {
     { key: "man_made", value: "water_tap" },
     { key: "amenity", value: "water_point" },
     // Fallback: catches toilets/fountains/campsites that happen to have a tap.
-    // It must be a fallback so a cafe tagged drinking_water=yes stays "resupply".
+    // It must be a fallback so a cafe tagged drinking_water=yes stays "restaurant".
     // (natural=water named lakes are deliberately absent: a lake is not a
     // drinking source.)
     { key: "drinking_water", value: "yes", fallback: true },
@@ -83,6 +90,8 @@ export const POI_CATALOG: Record<POIType, POITagRule[]> = {
       exclude: [{ key: "shelter_type", value: "public_transport" }],
     },
   ],
+  // Places to buy supplies to carry. Sit-down/takeaway food is "restaurant"
+  // so a town's cafes do not swamp the list of actual shops.
   resupply: [
     { key: "shop", value: "supermarket" },
     { key: "shop", value: "convenience" },
@@ -91,12 +100,16 @@ export const POI_CATALOG: Record<POIType, POITagRule[]> = {
     { key: "shop", value: "bakery" },
     { key: "shop", value: "greengrocer" },
     { key: "shop", value: "outdoor" },
-    { key: "amenity", value: "cafe" },
-    { key: "amenity", value: "restaurant" },
-    { key: "amenity", value: "pub" },
-    { key: "amenity", value: "fast_food" },
     { key: "amenity", value: "fuel" },
     { key: "amenity", value: "post_office" },
+  ],
+  restaurant: [
+    { key: "amenity", value: "restaurant" },
+    { key: "amenity", value: "cafe" },
+    { key: "amenity", value: "fast_food" },
+    { key: "amenity", value: "pub" },
+    { key: "amenity", value: "bar" },
+    { key: "amenity", value: "food_court" },
   ],
   transport: [
     { key: "highway", value: "bus_stop" },
@@ -145,7 +158,7 @@ function ruleMatches(tags: Record<string, string>, rule: POITagRule): boolean {
  *
  * Two passes: every non-fallback rule of every category first (catalog order),
  * then the fallback rules. That is what keeps `amenity=cafe` + `drinking_water=yes`
- * classified as resupply while `amenity=toilets` + `drinking_water=yes` becomes water.
+ * classified as restaurant while `amenity=toilets` + `drinking_water=yes` becomes water.
  *
  * `preferred` (normally the types a caller asked for) is tried first, both
  * passes, before the remaining types. Without it a feature that satisfies rules

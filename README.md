@@ -17,7 +17,7 @@ A web application for trail planning and GPX file processing. Features both clie
 
 ### POI Enrichment (`/tools/enrich.html`)
 - Enrich GPX routes with Points of Interest from OpenStreetMap
-- Find water sources, camping, resupply points, transport, and emergency services
+- Find water sources, camping, resupply shops, restaurants and cafes, transport, and emergency services
 - Corridor search: queries a buffer around the route itself (`around:`), not a bounding box, so a long or dog-legged trail does not drag in POIs hundreds of kilometres off-route
 - Matches nodes, ways and relations (`nwr`), so features mapped as areas — a supermarket building, a campsite polygon — are found and reduced to their centre point
 - Filter POIs by distance from route (exact cross-track distance to the nearest segment)
@@ -126,7 +126,7 @@ The application includes serverless API endpoints for POI and elevation data:
 
 | Endpoint | Description |
 |----------|-------------|
-| `POST /api/overpass` | Query OpenStreetMap for POIs along a route corridor (`{corridor, radiusMeters, types}`, max 400 vertices and 10 km radius) or, as a fallback, within a bounding box (`{bounds, types}`, max 1.5° per side). `types` must be a non-empty subset of `water`, `camping`, `resupply`, `transport`, `emergency`. Returns the raw Overpass JSON. |
+| `POST /api/overpass` | Query OpenStreetMap for POIs along a route corridor (`{corridor, radiusMeters, types}`, max 400 vertices and 10 km radius) or, as a fallback, within a bounding box (`{bounds, types}`, max 1.5° per side). `types` must be a non-empty subset of `water`, `camping`, `resupply`, `restaurant`, `transport`, `emergency`. Returns the raw Overpass JSON. |
 | `POST /api/elevation` | Get elevation data for a list of coordinates |
 | `GET /api/health` | Health check for all external services |
 

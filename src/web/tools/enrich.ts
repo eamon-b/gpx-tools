@@ -57,6 +57,9 @@ const poiCampingCheckbox = document.getElementById(
 const poiResupplyCheckbox = document.getElementById(
   "poi-resupply"
 ) as HTMLInputElement;
+const poiRestaurantCheckbox = document.getElementById(
+  "poi-restaurant"
+) as HTMLInputElement;
 const poiTransportCheckbox = document.getElementById(
   "poi-transport"
 ) as HTMLInputElement;
@@ -194,6 +197,7 @@ function getSelectedTypes(): POIType[] {
   if (poiWaterCheckbox.checked) types.push("water");
   if (poiCampingCheckbox.checked) types.push("camping");
   if (poiResupplyCheckbox.checked) types.push("resupply");
+  if (poiRestaurantCheckbox.checked) types.push("restaurant");
   if (poiTransportCheckbox.checked) types.push("transport");
   if (poiEmergencyCheckbox.checked) types.push("emergency");
   return types;
@@ -383,6 +387,7 @@ const CATEGORY_ICONS: Record<POIType, string> = {
   water: "💧",
   camping: "⛺",
   resupply: "🛒",
+  restaurant: "🍽️",
   transport: "🚌",
   emergency: "🏥",
 };
@@ -392,6 +397,7 @@ const CATEGORY_SHORT_LABELS: Record<POIType, string> = {
   water: "Water",
   camping: "Camping",
   resupply: "Resupply",
+  restaurant: "Food",
   transport: "Transport",
   emergency: "Emergency",
 };
@@ -550,6 +556,7 @@ const categoryColors: Record<POIType, string> = {
   water: "#3b82f6",
   camping: "#22c55e",
   resupply: "#f97316",
+  restaurant: "#eab308",
   transport: "#8b5cf6",
   emergency: "#ef4444",
 };
@@ -658,6 +665,8 @@ function loadPreferences(): void {
       poiCampingCheckbox.checked = parsed.enrich.camping;
     if (parsed.enrich?.resupply !== undefined)
       poiResupplyCheckbox.checked = parsed.enrich.resupply;
+    if (parsed.enrich?.restaurant !== undefined)
+      poiRestaurantCheckbox.checked = parsed.enrich.restaurant;
     if (parsed.enrich?.transport !== undefined)
       poiTransportCheckbox.checked = parsed.enrich.transport;
     if (parsed.enrich?.emergency !== undefined)
@@ -690,6 +699,7 @@ function savePreferences(): void {
     water: poiWaterCheckbox.checked,
     camping: poiCampingCheckbox.checked,
     resupply: poiResupplyCheckbox.checked,
+    restaurant: poiRestaurantCheckbox.checked,
     transport: poiTransportCheckbox.checked,
     emergency: poiEmergencyCheckbox.checked,
     searchRadiusKm: searchRadiusInput.value,
@@ -702,6 +712,7 @@ function savePreferences(): void {
   poiWaterCheckbox,
   poiCampingCheckbox,
   poiResupplyCheckbox,
+  poiRestaurantCheckbox,
   poiTransportCheckbox,
   poiEmergencyCheckbox,
   searchRadiusInput,
