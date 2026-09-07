@@ -27,7 +27,25 @@ export type {
 } from "./types";
 
 // GPX Parser
-export { parseGpx, generateGpx } from "./gpx-parser";
+export { parseGpx, generateGpx, writeGpx } from "./gpx-parser";
+export type { GpxMetadata } from "./gpx-parser";
+
+// KML / KMZ Parser
+export {
+  parseKml,
+  parseKmz,
+  parseKmlCoordinates,
+  parseDescriptionFields,
+  kmlToGpxData,
+} from "./kml-parser";
+export type {
+  KmlCoord,
+  KmlGeometry,
+  KmlPlacemark,
+  KmlDocument,
+  KmlFeature,
+  KmlToGpxDataOptions,
+} from "./kml-parser";
 
 // Distance Utilities
 export {

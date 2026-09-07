@@ -25,7 +25,8 @@ vercel dev           # Run with serverless functions (requires Vercel CLI)
 ### Core Library (`src/lib/`)
 
 All processing logic lives here as reusable modules exported via `index.ts`:
-- `gpx-parser.ts` - GPX XML parsing/generation via DOM APIs
+- `gpx-parser.ts` - GPX XML parsing/generation via DOM APIs. `generateGpx` flattens everything into one track (what the splitter/optimiser want); `writeGpx` serialises a whole `GpxData` - every track with its segments, every waypoint with the optional `type`/`cmt`/`sym`/`link` - for when track boundaries matter
+- `kml-parser.ts` - KML/KMZ reader (`parseKml`, `parseKmz` via jszip) producing placemarks with their folder path, geometry and attributes, plus `kmlToGpxData` to map them onto `GpxData` through a caller-supplied `classify`. Trail authorities often publish a richer KMZ than GPX, so this is the way one enters the pipeline. Parsing walks the DOM by `localName`, not CSS selectors, because KML in the wild is inconsistent about namespace prefixes. `parseDescriptionFields` recovers the attribute table that ArcGIS exports bury in `<description>` as HTML; `<ExtendedData>` wins over it when both are present
 - `gpx-splitter.ts` - Split large GPX into chunks
 - `gpx-combiner.ts` - Merge multiple GPX files
 - `gpx-optimizer.ts` - Simplify, smooth elevation, truncate

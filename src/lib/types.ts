@@ -12,6 +12,15 @@ export interface GpxWaypoint {
   ele: number;
   name: string;
   desc: string;
+  /**
+   * GPX `<type>`. Optional because most files omit it, but worth carrying:
+   * a downstream classifier prefers a declared type over guessing from the name.
+   */
+  type?: string;
+  cmt?: string;
+  sym?: string;
+  /** `<link href="...">` - a source page for the waypoint. */
+  link?: string;
 }
 
 export interface GpxSegment {
