@@ -70,6 +70,10 @@ Redis is best effort in `overpass.ts`: cache reads/writes and the rate-limit cou
 - **Library-first**: Core logic in `src/lib/`, web and API consume it
 - **Type-driven**: Shared interfaces in `types.ts`
 - **Client-side processing**: Files processed in browser, only API calls for external data
+- **Formatting**: `.prettierrc` records the house style - single quotes, 100 columns,
+  `es5` trailing commas, no parens on single-argument arrows. The tree predates it and is
+  not uniformly formatted, so format the code you touch rather than whole files: a blanket
+  `prettier --write` would bury the change in reformatting.
 
 ## Environment
 
