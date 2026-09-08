@@ -1,5 +1,8 @@
-node_modules/
-dist/
+# No trailing slash: that would match directories only, and `node_modules`
+# is often a symlink (to a shared install, or from a git worktree), which
+# git would then offer to commit.
+node_modules
+dist
 *.log
 .DS_Store
 
