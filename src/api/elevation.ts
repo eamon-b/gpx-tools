@@ -1,5 +1,6 @@
 import { getCorsHeaders } from './_cors';
 import { logError, logWarn } from './_logger';
+import { checkRateLimit, clientIp, type RateLimitResult } from './_ratelimit';
 import { createRedisClient } from './_redis';
 
 // Values here are structured (circuit-breaker objects, numeric elevations), so
@@ -19,6 +20,12 @@ interface ElevationResult {
 const OPEN_ELEVATION_URL = 'https://api.open-elevation.com/api/v1/lookup';
 const MAX_POINTS_PER_REQUEST = 100;
 const CACHE_TTL = 86400 * 365; // 1 year (elevation doesn't change)
+
+// Requests per IP per minute. Each request can carry 1000 points and fan out to
+// ten upstream calls, so without a limit this endpoint is a free open-elevation
+// proxy billed to us. Higher than the Overpass default because the client sends
+// a long route as several 200-point batches.
+const RATE_LIMIT = parseInt(process.env.ELEVATION_RATE_LIMIT_PER_MINUTE || '30');
 
 // Circuit breaker state keys
 const CIRCUIT_BREAKER_KEY = 'circuit:elevation';
@@ -137,6 +144,26 @@ export default async function handler(req: Request): Promise<Response> {
   }
 
   try {
+    // Fail open: a Redis outage must not lock everyone out.
+    let rateLimit: RateLimitResult | null = null;
+    try {
+      rateLimit = await checkRateLimit(redis, `ratelimit:elevation:${clientIp(req)}`, RATE_LIMIT);
+    } catch (error) {
+      logError('elevation:ratelimit', error);
+    }
+    if (rateLimit && !rateLimit.allowed) {
+      return new Response(JSON.stringify({ error: 'Rate limit exceeded', resetIn: rateLimit.resetIn }), {
+        status: 429,
+        headers: {
+          ...corsHeaders,
+          'Content-Type': 'application/json',
+          'X-RateLimit-Remaining': '0',
+          'X-RateLimit-Reset': String(rateLimit.resetIn),
+          'Retry-After': String(rateLimit.resetIn),
+        },
+      });
+    }
+
     const body: ElevationRequest = await req.json();
 
     if (!body.locations?.length) {
@@ -212,14 +239,21 @@ export default async function handler(req: Request): Promise<Response> {
         // Success - record it to potentially close circuit
         await recordSuccess();
 
-        for (let j = 0; j < batch.length; j++) {
-          const point = batch[j];
-          const elev = elevations[j];
-          results[point.index] = elev;
+        // Match results to points by coordinate, not by position: a reply that
+        // is reordered or short must not cache one point's elevation under
+        // another's key for a year. A point with no matching result gets null.
+        const byKey = new Map<string, number>();
+        for (const elev of elevations) {
+          if (typeof elev.elevation === 'number' && Number.isFinite(elev.elevation)) {
+            byKey.set(elevationCacheKey(elev.lat, elev.lon), elev.elevation);
+          }
+        }
 
-          // Cache the result (only if we got a valid elevation)
-          if (elev.elevation !== null) {
-            await setCachedElevation(point.lat, point.lon, elev.elevation);
+        for (const point of batch) {
+          const elevation = byKey.get(elevationCacheKey(point.lat, point.lon)) ?? null;
+          results[point.index] = { lat: point.lat, lon: point.lon, elevation };
+          if (elevation !== null) {
+            await setCachedElevation(point.lat, point.lon, elevation);
           }
         }
       } catch (error) {

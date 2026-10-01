@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseGpx, generateGpx } from './gpx-parser';
+import { parseGpx, generateGpx, writeGpx } from './gpx-parser';
 import type { GpxPoint, GpxWaypoint } from './types';
 
 describe('parseGpx', () => {
@@ -355,5 +355,20 @@ describe('generateGpx', () => {
     expect(parsed.tracks[0].segments[0].points).toHaveLength(1);
     expect(parsed.waypoints).toHaveLength(1);
     expect(parsed.waypoints[0].name).toBe('Test');
+  });
+});
+
+describe('GPX output escaping', () => {
+  it('escapes a hostile <time> value instead of letting it inject XML', () => {
+    const time = '2024-01-01T00:00:00Z</time><extensions>evil</extensions><time>';
+    const point: GpxPoint = { lat: 1, lon: 2, ele: 3, time };
+
+    for (const xml of [
+      generateGpx('t', [point], []),
+      writeGpx({ tracks: [{ name: 't', segments: [{ points: [point] }] }], routes: [], waypoints: [] }),
+    ]) {
+      expect(xml).not.toContain('<extensions>');
+      expect(parseGpx(xml).tracks[0].segments[0].points[0].time).toBe(time);
+    }
   });
 });

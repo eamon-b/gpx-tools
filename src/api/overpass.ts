@@ -1,6 +1,12 @@
 import { createHash } from "crypto";
 import { getCorsHeaders } from "./_cors";
 import { logError, logInfo } from "./_logger";
+import {
+  RATE_LIMIT,
+  checkRateLimit,
+  clientIp,
+  type RateLimitResult,
+} from "./_ratelimit";
 import { createRedisClient } from "./_redis";
 import {
   POI_TYPES,
@@ -21,14 +27,7 @@ import {
 // default, which would turn the cached payload back into an object.)
 const redis = createRedisClient({ automaticDeserialization: false });
 
-interface RateLimitResult {
-  allowed: boolean;
-  remaining: number;
-  resetIn: number;
-}
-
 const OVERPASS_ENDPOINT = "https://overpass-api.de/api/interpreter";
-const RATE_LIMIT = parseInt(process.env.RATE_LIMIT_PER_MINUTE || "10");
 const CACHE_TTL = parseInt(process.env.CACHE_TTL_SECONDS || "604800"); // 7 days
 
 // vercel.json gives this function maxDuration 30. Overpass gets 22 s to run the
@@ -160,27 +159,6 @@ async function bestEffort<T>(
   }
 }
 
-async function checkRateLimit(ip: string): Promise<RateLimitResult> {
-  const key = `ratelimit:${ip}`;
-
-  // Use atomic increment to avoid race conditions
-  // INCR creates the key with value 1 if it doesn't exist
-  const count = await redis.incr(key);
-
-  // Set expiry only on first request (when count is 1)
-  // This is still a race but harmless - worst case we reset the window slightly
-  if (count === 1) {
-    await redis.expire(key, 60);
-  }
-
-  if (count > RATE_LIMIT) {
-    const ttl = await redis.ttl(key);
-    return { allowed: false, remaining: 0, resetIn: ttl > 0 ? ttl : 60 };
-  }
-
-  return { allowed: true, remaining: RATE_LIMIT - count, resetIn: 60 };
-}
-
 export default async function handler(req: Request): Promise<Response> {
   const started = Date.now();
   const corsHeaders = getCorsHeaders(req);
@@ -200,9 +178,8 @@ export default async function handler(req: Request): Promise<Response> {
 
   try {
     // Rate limiting (fail-open: a Redis outage must not lock everyone out)
-    const ip = req.headers.get("x-forwarded-for")?.split(",")[0] || "unknown";
     const limit = await bestEffort("overpass:ratelimit", () =>
-      checkRateLimit(ip)
+      checkRateLimit(redis, `ratelimit:${clientIp(req)}`)
     );
     if (!limit.ok) {
       redisDegraded = true;

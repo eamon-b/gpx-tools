@@ -1,4 +1,5 @@
 import Papa from 'papaparse';
+import { csvSafeRows } from './csv-safe';
 import type { ProcessOptions, ProcessResult, ProcessedRow, ResupplyRow, DistanceUnit, ElevationUnit } from './types';
 
 const DEFAULT_RESUPPLY_KEYWORDS = [
@@ -233,7 +234,7 @@ export function processTravelPlan(
 
   const processedPlan = Papa.unparse({
     fields: processedPlanHeaders,
-    data: processedPlanData,
+    data: csvSafeRows(processedPlanData),
   }, { quotes: true, delimiter: opts.csvDelimiter });
 
   const resupplyHeaders = [
@@ -254,7 +255,7 @@ export function processTravelPlan(
 
   const resupplyPoints = Papa.unparse({
     fields: resupplyHeaders,
-    data: resupplyData,
+    data: csvSafeRows(resupplyData),
   }, { quotes: true, delimiter: opts.csvDelimiter });
 
   // Calculate stats
