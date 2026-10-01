@@ -31,6 +31,7 @@ All processing logic lives here as reusable modules exported via `index.ts`:
 - `gpx-combiner.ts` - Merge multiple GPX files
 - `gpx-optimizer.ts` - Simplify, smooth elevation, truncate
 - `csv-processor.ts` - Parse Caltopo CSV exports
+- `csv-safe.ts` - `csvSafeRows` guards CSV output against spreadsheet formula injection; run every user-derived table through it before `Papa.unparse`
 - `distance.ts` - Haversine distance calculations (3D with elevation)
 - `osm-poi.ts` - POI catalog, Overpass QL builder (`nwr` + `out center`), area validation, corridor chunking, route geometry
 - `overpass-client.ts` - Direct Overpass fetcher (retries/throttling) for Node scripts
@@ -51,7 +52,7 @@ Each tool is a self-contained HTML + TypeScript pair. Tools process files client
 - `health.ts` - Service health check
 - `_cors.ts`, `_logger.ts` - Shared utilities
 
-API features: CORS (configured via `ALLOWED_ORIGINS` env), rate limiting (default 10 req/min), Redis caching via `@upstash/redis` (shared client in `_redis.ts`).
+API features: CORS (configured via `ALLOWED_ORIGINS` env), per-IP rate limiting shared in `_ratelimit.ts` (overpass 10 req/min via `RATE_LIMIT_PER_MINUTE`, elevation 30 via `ELEVATION_RATE_LIMIT_PER_MINUTE`, both fail open), Redis caching via `@upstash/redis` (shared client in `_redis.ts`).
 
 `POI_CATALOG` in `src/lib/osm-poi.ts` is the single source of truth for the OSM tag rules: the same rules generate the server's Overpass selectors and the client's `categorizePOI` predicate, so add or change a POI tag there and nowhere else.
 

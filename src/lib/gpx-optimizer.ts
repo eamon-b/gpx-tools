@@ -560,7 +560,7 @@ export function generateOptimizedGpx(
 `;
         }
         if (options.preserveTimestamps && pt.time) {
-          xml += `        <time>${pt.time}</time>
+          xml += `        <time>${escapeXml(pt.time)}</time>
 `;
         }
         xml += `      </trkpt>
@@ -576,6 +576,111 @@ export function generateOptimizedGpx(
 
   xml += `</gpx>`;
   return xml;
+}
+
+/**
+ * Nearest-point lookup over a fixed point set, backed by a uniform grid.
+ *
+ * The privacy filter asks "which track point is nearest?" once per waypoint;
+ * scanning every point each time is O(waypoints x points), which on a
+ * 100k-point file with a few hundred waypoints is tens of millions of haversine
+ * calls on the UI thread. The grid confines each query to the cells around the
+ * waypoint, widening ring by ring until no unvisited cell can hold anything
+ * closer.
+ *
+ * Cells live in a local equirectangular projection (metres) centred on the
+ * points' mean latitude, while the distances compared are haversine. The
+ * projection can misstate a distance by a few percent across a long north-south
+ * trail, so the stop test discounts the ring bound by RING_BOUND_SLACK rather
+ * than trusting it exactly.
+ *
+ * Returns a function giving the index of the nearest point (first one on a
+ * tie), or -1 when the set is empty.
+ */
+const RING_BOUND_SLACK = 0.8;
+
+export function buildNearestPointIndex(
+  points: { lat: number; lon: number }[]
+): (lat: number, lon: number) => number {
+  const n = points.length;
+  if (n === 0) return () => -1;
+
+  const metersPerDegree = (Math.PI / 180) * EARTH_RADIUS_METERS;
+  let latSum = 0;
+  for (const p of points) latSum += p.lat;
+  const cosLat = Math.max(Math.cos((latSum / n) * Math.PI / 180), 0.01);
+  const projX = (lon: number) => lon * cosLat * metersPerDegree;
+  const projY = (lat: number) => lat * metersPerDegree;
+
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const p of points) {
+    const x = projX(p.lon);
+    const y = projY(p.lat);
+    if (x < minX) minX = x;
+    if (x > maxX) maxX = x;
+    if (y < minY) minY = y;
+    if (y > maxY) maxY = y;
+  }
+
+  // About sqrt(n) cells per side: a track occupies a thin band of them, so
+  // each holds on the order of sqrt(n) points.
+  const extent = Math.max(maxX - minX, maxY - minY, 1);
+  const cellSize = Math.max(extent / Math.ceil(Math.sqrt(n)), 1);
+  const cols = Math.floor((maxX - minX) / cellSize) + 1;
+  const rows = Math.floor((maxY - minY) / cellSize) + 1;
+
+  const cells = new Map<number, number[]>();
+  points.forEach((p, i) => {
+    const key =
+      Math.floor((projY(p.lat) - minY) / cellSize) * cols +
+      Math.floor((projX(p.lon) - minX) / cellSize);
+    const cell = cells.get(key);
+    if (cell) cell.push(i);
+    else cells.set(key, [i]);
+  });
+
+  const clamp = (v: number, hi: number) => Math.min(Math.max(v, 0), hi);
+
+  return (lat: number, lon: number): number => {
+    const cx = clamp(Math.floor((projX(lon) - minX) / cellSize), cols - 1);
+    const cy = clamp(Math.floor((projY(lat) - minY) / cellSize), rows - 1);
+    let best = Infinity;
+    let bestIndex = -1;
+
+    const visit = (col: number, row: number) => {
+      if (col < 0 || col >= cols || row < 0 || row >= rows) return;
+      const cell = cells.get(row * cols + col);
+      if (!cell) return;
+      for (const i of cell) {
+        const d = haversineDistance2D(lat, lon, points[i].lat, points[i].lon);
+        if (d < best || (d === best && i < bestIndex)) {
+          best = d;
+          bestIndex = i;
+        }
+      }
+    };
+
+    const maxRing = Math.max(cols, rows);
+    for (let r = 0; r <= maxRing; r++) {
+      // Anything in ring r is at least (r - 1) cells from the query point,
+      // even when the query sits outside the grid and was clamped onto it.
+      if (bestIndex >= 0 && (r - 1) * cellSize * RING_BOUND_SLACK > best) break;
+      if (r === 0) {
+        visit(cx, cy);
+        continue;
+      }
+      for (let col = cx - r; col <= cx + r; col++) {
+        visit(col, cy - r);
+        visit(col, cy + r);
+      }
+      for (let row = cy - r + 1; row <= cy + r - 1; row++) {
+        visit(cx - r, row);
+        visit(cx + r, row);
+      }
+    }
+
+    return bestIndex;
+  };
 }
 
 /**
@@ -707,17 +812,10 @@ export function optimizeGpx(
     // kept track point (resupply towns, mid-route POIs) are preserved.
     // truncateTracks reuses the original point objects, so identity works here.
     const keptPoints = new Set(allTracks.flatMap(t => t.segments.flatMap(s => s.points)));
+    const nearest = buildNearestPointIndex(pointsBeforeTruncation);
     waypoints = waypoints.filter(wpt => {
-      let minDist = Infinity;
-      let nearestIsKept = true;
-      for (const pt of pointsBeforeTruncation) {
-        const d = haversineDistance2D(wpt.lat, wpt.lon, pt.lat, pt.lon);
-        if (d < minDist) {
-          minDist = d;
-          nearestIsKept = keptPoints.has(pt);
-        }
-      }
-      return nearestIsKept;
+      const index = nearest(wpt.lat, wpt.lon);
+      return index < 0 || keptPoints.has(pointsBeforeTruncation[index]);
     });
   }
 

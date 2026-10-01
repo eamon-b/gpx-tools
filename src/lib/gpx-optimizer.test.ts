@@ -9,8 +9,10 @@ import {
   truncateTracks,
   roundCoordinates,
   optimizeGpx,
-  GPX_OPTIMIZER_DEFAULTS
+  GPX_OPTIMIZER_DEFAULTS,
+  buildNearestPointIndex,
 } from './gpx-optimizer';
+import { haversineDistance2D } from './distance';
 import type { GpxPoint, GpxTrack } from './types';
 
 describe('douglasPeucker', () => {
@@ -960,5 +962,44 @@ describe('GPX_OPTIMIZER_DEFAULTS', () => {
     expect(GPX_OPTIMIZER_DEFAULTS.maxElevationChangeRatio).toBe(0.15);
     expect(GPX_OPTIMIZER_DEFAULTS.maxPointCount).toBe(100000);
     expect(GPX_OPTIMIZER_DEFAULTS.maxFileSize).toBe(50 * 1024 * 1024);
+  });
+});
+
+describe('buildNearestPointIndex', () => {
+  // Deterministic LCG so a failure is reproducible.
+  let seed = 42;
+  const rand = () => (seed = (seed * 1664525 + 1013904223) % 4294967296) / 4294967296;
+
+  it('agrees with a brute-force scan along a wandering track', () => {
+    const points: { lat: number; lon: number }[] = [];
+    let lat = -37.8;
+    let lon = 145.0;
+    for (let i = 0; i < 3000; i++) {
+      lat += (rand() - 0.3) * 0.002;
+      lon += (rand() - 0.5) * 0.002;
+      points.push({ lat, lon });
+    }
+    const nearest = buildNearestPointIndex(points);
+
+    for (let q = 0; q < 300; q++) {
+      // Some queries on the track, some well off it (outside the grid).
+      const spread = q % 3 === 0 ? 2 : 0.05;
+      const qLat = -37.8 + (rand() - 0.5) * spread + 1.5;
+      const qLon = 145.0 + (rand() - 0.5) * spread;
+      let best = Infinity;
+      let bestIndex = -1;
+      points.forEach((p, i) => {
+        const d = haversineDistance2D(qLat, qLon, p.lat, p.lon);
+        if (d < best) {
+          best = d;
+          bestIndex = i;
+        }
+      });
+      expect(nearest(qLat, qLon)).toBe(bestIndex);
+    }
+  });
+
+  it('returns -1 for an empty set', () => {
+    expect(buildNearestPointIndex([])(0, 0)).toBe(-1);
   });
 });

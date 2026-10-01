@@ -1,4 +1,5 @@
 import Papa from 'papaparse';
+import { csvSafeRows } from './csv-safe';
 import { parseGpx } from './gpx-parser';
 import { haversineDistance3D, haversineDistance2D } from './distance';
 import type {
@@ -478,7 +479,7 @@ export function processGpxTravelPlan(
 
   const processedPlan = Papa.unparse({
     fields: processedPlanHeaders,
-    data: processedPlanData,
+    data: csvSafeRows(processedPlanData),
   }, { quotes: true, delimiter: opts.csvDelimiter });
 
   const resupplyHeaders = [
@@ -514,7 +515,7 @@ export function processGpxTravelPlan(
 
   const resupplyPoints = Papa.unparse({
     fields: resupplyHeaders,
-    data: resupplyData,
+    data: csvSafeRows(resupplyData),
   }, { quotes: true, delimiter: opts.csvDelimiter });
 
   // Calculate stats (in km and m for consistency with CSV processor)

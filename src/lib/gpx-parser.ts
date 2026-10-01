@@ -133,7 +133,7 @@ export function generateGpx(
 `;
     }
     if (pt.time) {
-      xml += `        <time>${pt.time}</time>
+      xml += `        <time>${escapeXml(pt.time)}</time>
 `;
     }
     xml += `      </trkpt>
@@ -223,7 +223,7 @@ export function writeGpx(data: GpxData, metadata: GpxMetadata = {}): string {
         }
         parts.push(open);
         if (pt.ele !== 0) parts.push(`        <ele>${Math.round(pt.ele * 10) / 10}</ele>`);
-        if (pt.time) parts.push(`        <time>${pt.time}</time>`);
+        if (pt.time) parts.push(`        <time>${escapeXml(pt.time)}</time>`);
         parts.push('      </trkpt>');
       }
       parts.push('    </trkseg>');
