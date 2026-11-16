@@ -7,6 +7,7 @@
  */
 
 import { proxyPOIFetcher } from "./api-client.js";
+import { csvSafeCell } from "./csv-safe.js";
 import {
   CORRIDOR_LIMITS,
   buildCorridorChunks,
@@ -318,12 +319,17 @@ export async function enrichRoute(
 /**
  * Escape a single CSV field: wrap in double quotes when it contains a comma,
  * quote, or newline, and double any embedded quotes.
+ *
+ * OSM names and descriptions are free text anyone can edit, so the field is
+ * first run through `csvSafeCell`: a POI named `=HYPERLINK(...)` must not
+ * become a live formula when the export is opened in a spreadsheet.
  */
 function escapeCSVField(field: string): string {
-  if (/[",\r\n]/.test(field)) {
-    return `"${field.replace(/"/g, '""')}"`;
+  const safe = csvSafeCell(field);
+  if (/[",\r\n]/.test(safe)) {
+    return `"${safe.replace(/"/g, '""')}"`;
   }
-  return field;
+  return safe;
 }
 
 /** Format POIs as CSV for export. */
@@ -402,5 +408,5 @@ function getCategorySymbol(category: POIType): string {
     transport: "Ground Transportation",
     emergency: "Medical Facility",
   };
-  return symbols[category] || "Flag, Blue";
+  return symbols[category];
 }

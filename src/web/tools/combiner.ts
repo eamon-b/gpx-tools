@@ -1,6 +1,8 @@
 import { combineGpx, type CombineResult } from '../../lib/index.js';
 import { saveAs } from 'file-saver';
 import { escapeHtml } from '../shared/html-utils.js';
+import { formatFileSize } from '../shared/file-utils.js';
+import { PREFS_KEY, savePrefs } from '../shared/prefs.js';
 
 // DOM Elements
 const gpxUploadArea = document.getElementById('gpx-upload-area')!;
@@ -34,12 +36,6 @@ let combineResult: CombineResult | null = null;
 let outputFilename = 'combined.gpx';
 
 // Utility functions
-function formatFileSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
 function computeOutputFilename(trackName: string): string {
   const slug = trackName
     .trim()
@@ -279,7 +275,7 @@ downloadBtn.addEventListener('click', () => {
 
 // Load preferences from localStorage
 function loadPreferences(): void {
-  const prefs = localStorage.getItem('gpx-tools-prefs');
+  const prefs = localStorage.getItem(PREFS_KEY);
   if (prefs) {
     try {
       const parsed = JSON.parse(prefs);
@@ -294,14 +290,12 @@ function loadPreferences(): void {
 }
 
 function savePreferences(): void {
-  const existingPrefs = JSON.parse(localStorage.getItem('gpx-tools-prefs') || '{}');
-  existingPrefs.combiner = {
+  savePrefs('combiner', {
     trackName: trackNameInput.value,
     removeDuplicates: removeDuplicatesCheckbox.checked,
     autoOrder: autoOrderCheckbox.checked,
     gapThreshold: parseInt(gapThresholdInput.value),
-  };
-  localStorage.setItem('gpx-tools-prefs', JSON.stringify(existingPrefs));
+  });
 }
 
 // Save preferences on change

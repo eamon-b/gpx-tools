@@ -25,14 +25,14 @@ vercel dev           # Run with serverless functions (requires Vercel CLI)
 ### Core Library (`src/lib/`)
 
 All processing logic lives here as reusable modules exported via `index.ts`:
-- `gpx-parser.ts` - GPX XML parsing/generation via DOM APIs. `generateGpx` flattens everything into one track (what the splitter/optimiser want); `writeGpx` serialises a whole `GpxData` - every track with its segments, every waypoint with the optional `type`/`cmt`/`sym`/`link` - for when track boundaries matter
+- `gpx-parser.ts` - GPX XML parsing/generation via DOM APIs. `waypointChildElements` is the one place a `<wpt>`'s name/cmt/desc/link/sym/type are serialised; every writer (including the optimizer's) goes through it. `generateGpx` flattens everything into one track (what the splitter/optimiser want); `writeGpx` serialises a whole `GpxData` - every track with its segments, every waypoint with the optional `type`/`cmt`/`sym`/`link` - for when track boundaries matter
 - `kml-parser.ts` - KML/KMZ reader (`parseKml`, `parseKmz` via jszip) producing placemarks with their folder path, geometry and attributes, plus `kmlToGpxData` to map them onto `GpxData` through a caller-supplied `classify`. Trail authorities often publish a richer KMZ than GPX, so this is the way one enters the pipeline. Parsing walks the DOM by `localName`, not CSS selectors, because KML in the wild is inconsistent about namespace prefixes. `parseDescriptionFields` recovers the attribute table that ArcGIS exports bury in `<description>` as HTML; `<ExtendedData>` wins over it when both are present
 - `gpx-splitter.ts` - Split large GPX into chunks
 - `gpx-combiner.ts` - Merge multiple GPX files
 - `gpx-optimizer.ts` - Simplify, smooth elevation, truncate
 - `csv-processor.ts` - Parse Caltopo CSV exports
 - `csv-safe.ts` - `csvSafeRows` guards CSV output against spreadsheet formula injection; run every user-derived table through it before `Papa.unparse`
-- `distance.ts` - Haversine distance calculations (3D with elevation)
+- `distance.ts` - Haversine distance calculations (3D with elevation). `haversineDistance2D` is an alias of `haversineDistance`
 - `osm-poi.ts` - POI catalog, Overpass QL builder (`nwr` + `out center`), area validation, corridor chunking, route geometry
 - `overpass-client.ts` - Direct Overpass fetcher (retries/throttling) for Node scripts
 - `poi-enrichment.ts` - OpenStreetMap POI queries
@@ -43,12 +43,14 @@ All processing logic lives here as reusable modules exported via `index.ts`:
 
 ### Web Tools (`src/web/tools/`)
 
-Each tool is a self-contained HTML + TypeScript pair. Tools process files client-side (no upload) and export results as ZIP using jszip/file-saver.
+Each tool is an HTML + TypeScript pair. Tools process files client-side (no upload) and export results as ZIP using jszip/file-saver.
+
+What the tools have in common lives in `src/web/shared/`: `file-utils.ts` (the single-file upload area, `formatFileSize`, `stripExtension`), `prefs.ts` (`savePrefs` - each tool's section of the one `gpx-tools-prefs` localStorage entry; never throws), `html-utils.ts` (`escapeHtml` - use it for anything file-derived that goes through `innerHTML`) and `map-utils.ts` (Leaflet setup).
 
 ### Serverless API (`src/api/`)
 
 - `overpass.ts` - OpenStreetMap POI proxy. Accepts a corridor (`{corridor, radiusMeters, types}`, where `corridor` is one polyline `[[lat,lon],...]` or several `[[[lat,lon],...],...]`, 400 vertices total) or bbox (`{bounds, types}`) body, validates it with `validateOverpassArea`/`parseOverpassArea` and builds the query with `buildOverpassQuery` from `src/lib/osm-poi.ts` - it owns no tag rules of its own. Coordinates are canonicalised with `roundCoord` so the sha256 cache key and the query text agree.
-- `elevation.ts` - Elevation data enrichment
+- `elevation.ts` - Elevation data enrichment. Cache reads are one `MGET` and writes one pipeline per upstream batch - never a Redis call per point
 - `health.ts` - Service health check
 - `_cors.ts`, `_logger.ts` - Shared utilities
 
@@ -58,7 +60,7 @@ API features: CORS (configured via `ALLOWED_ORIGINS` env), per-IP rate limiting 
 
 Corridor queries carry a global `[bbox:]` setting padded by the radius (without it Overpass walks the planet-wide tag index per selector and times out on long routes), and `enrichRoute` packs short disjoint polylines (side trips) into one query via `packCorridorChunks`. A 200 from Overpass is validated with `overpassPayloadError` before it is cached or returned: runtime errors (query timed out) arrive as 200 with a `remark`.
 
-Redis is best effort in `overpass.ts`: cache reads/writes and the rate-limit counter are wrapped so an outage logs and falls open (`X-Cache: BYPASS`) instead of failing the request. Timeouts are tied to `vercel.json`'s `maxDuration: 30` - Overpass `[timeout:22]`, HTTP abort at 27 s; an upstream 429/504 or timeout becomes a `503` with `Retry-After`.
+Redis is best effort in `overpass.ts` and `elevation.ts`: cache reads/writes, the rate-limit counter and (elevation) the circuit breaker are wrapped so an outage logs and falls open (`X-Cache: BYPASS` on overpass) instead of failing the request. Timeouts are tied to `vercel.json`'s `maxDuration: 30` - Overpass `[timeout:22]`, HTTP abort at 27 s; an upstream 429/504 or timeout becomes a `503` with `Retry-After`.
 
 **Note:** Root `api/` contains thin re-export stubs (e.g. `export { default } from '../src/api/overpass'`) required by Vercel's function discovery. Actual logic lives in `src/api/`.
 
@@ -71,6 +73,8 @@ Redis is best effort in `overpass.ts`: cache reads/writes and the rate-limit cou
 - **Library-first**: Core logic in `src/lib/`, web and API consume it
 - **Type-driven**: Shared interfaces in `types.ts`
 - **Client-side processing**: Files processed in browser, only API calls for external data
+- **Large tracks**: never `push(...points)` or `Math.min(...values)` over track points - spreading
+  more than ~125k elements into arguments overflows the call stack. Use `flatMap`/`concat` or a loop.
 - **Formatting**: `.prettierrc` records the house style - single quotes, 100 columns,
   `es5` trailing commas, no parens on single-argument arrows. The tree predates it and is
   not uniformly formatted, so format the code you touch rather than whole files: a blanket

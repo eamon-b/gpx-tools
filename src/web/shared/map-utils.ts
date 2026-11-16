@@ -110,23 +110,6 @@ export function createCircleMarker(
 }
 
 /**
- * Create a standard marker with popup
- */
-export function createMarker(
-  lat: number,
-  lon: number,
-  popup?: string
-): L.Marker {
-  const marker = L.marker([lat, lon]);
-
-  if (popup) {
-    marker.bindPopup(popup);
-  }
-
-  return marker;
-}
-
-/**
  * Create a numbered marker for day indicators
  */
 export function createNumberedMarker(
@@ -156,15 +139,4 @@ export function createNumberedMarker(
   });
 
   return L.marker([lat, lon], { icon });
-}
-
-/**
- * Clear all layers from a map except the tile layer
- */
-export function clearMapLayers(map: L.Map): void {
-  map.eachLayer(layer => {
-    if (!(layer instanceof L.TileLayer)) {
-      map.removeLayer(layer);
-    }
-  });
 }

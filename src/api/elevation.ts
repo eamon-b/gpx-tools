@@ -2,6 +2,7 @@ import { getCorsHeaders } from './_cors';
 import { logError, logWarn } from './_logger';
 import { checkRateLimit, clientIp, type RateLimitResult } from './_ratelimit';
 import { createRedisClient } from './_redis';
+import { roundCoord } from '../lib/osm-poi';
 
 // Values here are structured (circuit-breaker objects, numeric elevations), so
 // keep @upstash/redis's default JSON (de)serialization.
@@ -36,6 +37,20 @@ interface CircuitState {
   failures: number;
   lastFailure: number;
   isOpen: boolean;
+}
+
+/**
+ * Redis backs the cache, the circuit breaker and the rate limiter here, and
+ * none of those is worth failing a request over: if it is unreachable, log and
+ * carry on with `fallback` (no cache, breaker closed).
+ */
+async function bestEffort<T>(context: string, operation: () => Promise<T>, fallback: T): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    logError(context, error);
+    return fallback;
+  }
 }
 
 async function getCircuitState(): Promise<CircuitState> {
@@ -84,27 +99,39 @@ async function isCircuitOpen(): Promise<{ open: boolean; resetIn?: number }> {
   return { open: true, resetIn: CIRCUIT_RESET_TIMEOUT - timeSinceFailure };
 }
 
-// Round coordinates to ~11m precision (4 decimal places)
-// This provides consistent cache keys regardless of minor coordinate variations
-function roundCoord(coord: number, decimals: number = 4): number {
-  const factor = Math.pow(10, decimals);
-  return Math.round(coord * factor) / factor;
-}
-
+// Keys use the shared ~11 m grid (4 decimal places), so nearby points - and
+// the same point sent with different float noise - hit the same cache entry.
 function elevationCacheKey(lat: number, lon: number): string {
-  // Round to 4 decimal places (~11m precision at equator)
-  // This ensures nearby points hit the same cache entry
-  return `elev:${roundCoord(lat, 4)}:${roundCoord(lon, 4)}`;
+  return `elev:${roundCoord(lat)}:${roundCoord(lon)}`;
 }
 
-async function getCachedElevation(lat: number, lon: number): Promise<number | null> {
-  const key = elevationCacheKey(lat, lon);
-  return redis.get<number>(key);
+/**
+ * Cached elevations for a list of locations, in order; null where there is no
+ * entry. One MGET for the whole request: a GET per point is up to a thousand
+ * sequential HTTP round trips to Upstash, which alone can outlast the
+ * function's 30 s budget.
+ */
+async function getCachedElevations(
+  locations: { lat: number; lon: number }[]
+): Promise<(number | null)[]> {
+  const keys = locations.map(loc => elevationCacheKey(loc.lat, loc.lon));
+  const values = await redis.mget<(number | null)[]>(...keys);
+  return keys.map((_, i) => {
+    const value = values?.[i];
+    return typeof value === 'number' && Number.isFinite(value) ? value : null;
+  });
 }
 
-async function setCachedElevation(lat: number, lon: number, elevation: number): Promise<void> {
-  const key = elevationCacheKey(lat, lon);
-  await redis.set(key, elevation, { ex: CACHE_TTL });
+/** Cache a batch of elevations in a single pipelined request. */
+async function setCachedElevations(
+  entries: { lat: number; lon: number; elevation: number }[]
+): Promise<void> {
+  if (entries.length === 0) return;
+  const pipeline = redis.pipeline();
+  for (const entry of entries) {
+    pipeline.set(elevationCacheKey(entry.lat, entry.lon), entry.elevation, { ex: CACHE_TTL });
+  }
+  await pipeline.exec();
 }
 
 const FETCH_TIMEOUT_MS = 15000; // 15 second timeout for external API
@@ -164,9 +191,17 @@ export default async function handler(req: Request): Promise<Response> {
       });
     }
 
-    const body: ElevationRequest = await req.json();
+    let body: ElevationRequest;
+    try {
+      body = await req.json();
+    } catch {
+      return new Response(JSON.stringify({ error: 'Invalid JSON body' }), {
+        status: 400,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
 
-    if (!body.locations?.length) {
+    if (!Array.isArray(body?.locations) || body.locations.length === 0) {
       return new Response(JSON.stringify({ error: 'No locations provided' }), {
         status: 400,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -183,7 +218,7 @@ export default async function handler(req: Request): Promise<Response> {
     // Validate coordinate bounds
     for (const loc of body.locations) {
       if (
-        typeof loc.lat !== 'number' || typeof loc.lon !== 'number' ||
+        !loc || typeof loc.lat !== 'number' || typeof loc.lon !== 'number' ||
         loc.lat < -90 || loc.lat > 90 ||
         loc.lon < -180 || loc.lon > 180
       ) {
@@ -197,7 +232,7 @@ export default async function handler(req: Request): Promise<Response> {
     }
 
     // Check circuit breaker before making external requests
-    const circuit = await isCircuitOpen();
+    const circuit = await bestEffort('elevation:circuit', isCircuitOpen, { open: false });
     if (circuit.open) {
       return new Response(JSON.stringify({
         error: 'Elevation service temporarily unavailable',
@@ -216,15 +251,20 @@ export default async function handler(req: Request): Promise<Response> {
     const results: ElevationResult[] = [];
     const uncached: { index: number; lat: number; lon: number }[] = [];
 
-    // Check cache for each point
+    // Check the cache for every point in one round trip
+    const cachedElevations = await bestEffort(
+      'elevation:cache-get',
+      () => getCachedElevations(body.locations),
+      body.locations.map(() => null)
+    );
     for (let i = 0; i < body.locations.length; i++) {
       const loc = body.locations[i];
-      const cached = await getCachedElevation(loc.lat, loc.lon);
+      const cached = cachedElevations[i];
 
       if (cached !== null) {
         results[i] = { lat: loc.lat, lon: loc.lon, elevation: cached };
       } else {
-        uncached.push({ index: i, ...loc });
+        uncached.push({ index: i, lat: loc.lat, lon: loc.lon });
       }
     }
 
@@ -237,7 +277,7 @@ export default async function handler(req: Request): Promise<Response> {
         const elevations = await fetchElevations(locations);
 
         // Success - record it to potentially close circuit
-        await recordSuccess();
+        await bestEffort('elevation:circuit', recordSuccess, undefined);
 
         // Match results to points by coordinate, not by position: a reply that
         // is reordered or short must not cache one point's elevation under
@@ -249,18 +289,20 @@ export default async function handler(req: Request): Promise<Response> {
           }
         }
 
+        const toCache: { lat: number; lon: number; elevation: number }[] = [];
         for (const point of batch) {
           const elevation = byKey.get(elevationCacheKey(point.lat, point.lon)) ?? null;
           results[point.index] = { lat: point.lat, lon: point.lon, elevation };
           if (elevation !== null) {
-            await setCachedElevation(point.lat, point.lon, elevation);
+            toCache.push({ lat: point.lat, lon: point.lon, elevation });
           }
         }
+        await bestEffort('elevation:cache-set', () => setCachedElevations(toCache), undefined);
       } catch (error) {
         logError('elevation:fetch', error, { batchSize: batch.length });
 
         // Record failure for circuit breaker
-        const circuitOpened = await recordFailure();
+        const circuitOpened = await bestEffort('elevation:circuit', recordFailure, false);
         if (circuitOpened) {
           logWarn('elevation:circuit', 'Circuit breaker opened for elevation API');
         }

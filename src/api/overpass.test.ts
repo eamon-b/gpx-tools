@@ -371,6 +371,23 @@ describe("overpass handler: Redis failures", () => {
 });
 
 describe("overpass handler: rate limiting", () => {
+  it("re-arms the expiry of an over-limit counter that lost it", async () => {
+    fetchMock(overpassOk());
+    redisMock.incr.mockResolvedValue(11);
+    // -1: the key exists but has no TTL, so it would never reset on its own.
+    redisMock.ttl.mockResolvedValue(-1);
+
+    const res = await handler(
+      post({ corridor: CORRIDOR, radiusMeters: 2000, types: ["water"] })
+    );
+
+    expect(res.status).toBe(429);
+    expect(redisMock.expire).toHaveBeenCalledWith(
+      expect.stringContaining("ratelimit:"),
+      60
+    );
+  });
+
   it("returns 429 with resetIn once the window is exhausted", async () => {
     const fn = fetchMock(overpassOk());
     redisMock.incr.mockResolvedValue(11);

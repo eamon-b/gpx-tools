@@ -161,3 +161,10 @@ describe('exportComparisonToCSV', () => {
     expect(csv).not.toContain('NaN');
   });
 });
+
+describe('compareRoutes with a zero-length route', () => {
+  it('reports 0% shared rather than NaN', () => {
+    const comparison = compareRoutes([{ lat: 0, lon: 0 }], [{ lat: 0, lon: 0 }]);
+    expect(comparison.sharedPercentage).toBe(0);
+  });
+});

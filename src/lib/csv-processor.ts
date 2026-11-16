@@ -22,7 +22,7 @@ const M_TO_FT = 3.28084;
 /**
  * Convert distance value based on selected unit
  */
-function formatDistance(km: number, unit: DistanceUnit): number {
+export function formatDistance(km: number, unit: DistanceUnit): number {
   const value = unit === 'mi' ? km * KM_TO_MI : km;
   return Math.round(value * 1000) / 1000;
 }
@@ -30,7 +30,7 @@ function formatDistance(km: number, unit: DistanceUnit): number {
 /**
  * Convert elevation value based on selected unit
  */
-function formatElevation(meters: number, unit: ElevationUnit): number {
+export function formatElevation(meters: number, unit: ElevationUnit): number {
   const value = unit === 'ft' ? meters * M_TO_FT : meters;
   return Math.round(value * 10) / 10;
 }
@@ -115,7 +115,7 @@ function convertDistance(distStr: string | null | undefined): number {
 /**
  * Check if notes contain any resupply keywords
  */
-function hasResupplyKeyword(notes: string | null | undefined, keywords: string[]): boolean {
+export function hasResupplyKeyword(notes: string | null | undefined, keywords: string[]): boolean {
   if (!notes) return false;
   const lowerNotes = String(notes).toLowerCase();
   return keywords.some(keyword => lowerNotes.includes(keyword));

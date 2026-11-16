@@ -1,7 +1,13 @@
 import Papa from 'papaparse';
 import { csvSafeRows } from './csv-safe';
+import {
+  DEFAULT_RESUPPLY_KEYWORDS,
+  formatDistance,
+  formatElevation,
+  hasResupplyKeyword,
+} from './csv-processor';
 import { parseGpx } from './gpx-parser';
-import { haversineDistance3D, haversineDistance2D } from './distance';
+import { EARTH_RADIUS_METERS, haversineDistance3D, haversineDistance2D } from './distance';
 import type {
   GpxPoint,
   GpxWaypoint,
@@ -10,16 +16,9 @@ import type {
   ProcessResult,
   ProcessedRow,
   ResupplyRow,
-  DistanceUnit,
-  ElevationUnit,
 } from './types';
 
 // Default options for GPX processing
-const DEFAULT_RESUPPLY_KEYWORDS = [
-  'grocer', 'market', 'foodland', 'iga',
-  'wool', 'coles', 'general', 'servo'
-];
-
 const DEFAULT_GPX_OPTIONS: GpxProcessOptions = {
   resupplyKeywords: DEFAULT_RESUPPLY_KEYWORDS,
   includeEndAsResupply: true,
@@ -29,35 +28,6 @@ const DEFAULT_GPX_OPTIONS: GpxProcessOptions = {
   csvDelimiter: ',',
   waypointMaxDistance: 200, // meters
 };
-
-// Unit conversion constants
-const KM_TO_MI = 0.621371;
-const M_TO_FT = 3.28084;
-
-/**
- * Convert distance value based on selected unit
- */
-function formatDistance(km: number, unit: DistanceUnit): number {
-  const value = unit === 'mi' ? km * KM_TO_MI : km;
-  return Math.round(value * 1000) / 1000;
-}
-
-/**
- * Convert elevation value based on selected unit
- */
-function formatElevation(meters: number, unit: ElevationUnit): number {
-  const value = unit === 'ft' ? meters * M_TO_FT : meters;
-  return Math.round(value * 10) / 10;
-}
-
-/**
- * Check if text contains any resupply keywords
- */
-function hasResupplyKeyword(text: string | null | undefined, keywords: string[]): boolean {
-  if (!text) return false;
-  const lowerText = String(text).toLowerCase();
-  return keywords.some(keyword => lowerText.includes(keyword));
-}
 
 /**
  * Find all waypoint visits along the route.
@@ -97,18 +67,30 @@ export function findWaypointVisits(
   // Key: waypoint index, Value: { bestDistance, bestTrackIndex }
   const activeProximity: Map<number, { bestDistance: number; bestTrackIndex: number }> = new Map();
 
+  // The latitude difference alone is a lower bound on the distance, and it
+  // costs a subtraction instead of a haversine. This loop is
+  // O(track points x waypoints) - tens of millions of pairs on a long trail -
+  // and nearly all of them are far apart, so rule those out cheaply.
+  const metersPerDegreeLat = (Math.PI / 180) * EARTH_RADIUS_METERS;
+
   for (let trackIdx = 0; trackIdx < trackPoints.length; trackIdx++) {
     const trackPoint = trackPoints[trackIdx];
 
     // Check each waypoint
     for (let wpIdx = 0; wpIdx < waypoints.length; wpIdx++) {
       const waypoint = waypoints[wpIdx];
+      const existing = activeProximity.get(wpIdx);
+
+      const latBound = Math.abs(waypoint.lat - trackPoint.lat) * metersPerDegreeLat;
+      if (!existing && latBound > maxDistanceMeters + 1e-6) {
+        // Too far to enter proximity; the exact distance cannot matter.
+        continue;
+      }
+
       const distance = haversineDistance2D(
         waypoint.lat, waypoint.lon,
         trackPoint.lat, trackPoint.lon
       );
-
-      const existing = activeProximity.get(wpIdx);
 
       if (existing) {
         // Already tracking this waypoint
@@ -193,11 +175,8 @@ export function calculateSegmentStats(
  * Flatten track segments from a single track into an array of points.
  */
 function flattenSingleTrackPoints(track: { segments: { points: GpxPoint[] }[] }): GpxPoint[] {
-  const points: GpxPoint[] = [];
-  for (const segment of track.segments) {
-    points.push(...segment.points);
-  }
-  return points;
+  // flatMap, not push(...points): a very long segment would overflow the stack.
+  return track.segments.flatMap(segment => segment.points);
 }
 
 /**
@@ -263,7 +242,8 @@ function processSingleTrack(
     // Get elevation from the track point (more consistent with distance/ascent/descent calculations)
     const elevation = trackPoints[visit.trackIndex].ele;
 
-    // Combine name and desc for notes, checking both for resupply keywords
+    // The description becomes the notes column; resupply detection below
+    // checks both it and the name.
     const notes = visit.waypoint.desc || '';
 
     processedRows.push({
@@ -431,8 +411,8 @@ export function processGpxTravelPlan(
         processedRows: result.processedRows,
         resupplyRows: result.resupplyRows,
       });
-      allProcessedRows.push(...result.processedRows);
-      allResupplyRows.push(...result.resupplyRows);
+      for (const row of result.processedRows) allProcessedRows.push(row);
+      for (const row of result.resupplyRows) allResupplyRows.push(row);
       result.matchedWaypoints.forEach(wpt => allMatchedWaypoints.add(wpt));
     }
   }

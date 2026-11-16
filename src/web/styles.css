@@ -459,54 +459,10 @@ footer {
   background: var(--surface);
 }
 
-.tolerance-hints {
-  display: flex;
-  justify-content: space-between;
-  font-size: 0.75rem;
-  color: var(--text-muted);
-  margin-top: -0.5rem;
-  margin-bottom: 0.75rem;
-  padding: 0 0.25rem;
-}
-
 .options h3:not(:first-child) {
   margin-top: 1.25rem;
   padding-top: 1rem;
   border-top: 1px solid var(--border);
-}
-
-.elevation-option.disabled {
-  opacity: 0.5;
-}
-
-.elevation-option.disabled input {
-  cursor: not-allowed;
-}
-
-.file-item-status {
-  font-size: 0.75rem;
-  font-weight: 600;
-  padding: 0.125rem 0.5rem;
-  border-radius: 4px;
-  margin-top: 0.25rem;
-  display: inline-block;
-}
-
-.file-item-status.passed {
-  background: #dcfce7;
-  color: #166534;
-}
-
-.file-item-status.warning {
-  background: #fef3c7;
-  color: #92400e;
-}
-
-.file-item-warnings {
-  display: block;
-  font-size: 0.75rem;
-  color: #92400e;
-  margin-top: 0.25rem;
 }
 
 .stats .warning {
@@ -566,20 +522,11 @@ footer {
     width: 100%;
   }
 
-  .tolerance-hints {
-    flex-direction: column;
-    gap: 0.25rem;
-  }
 }
 
 /* Landing page styles */
 .container.landing {
   max-width: 960px;
-}
-
-/* Trail data page - wider to fit waypoints table */
-.container.trail-data {
-  max-width: 1200px;
 }
 
 .hero {
@@ -654,31 +601,6 @@ footer {
 .tool-card.browse-all {
   background: var(--bg);
   border-style: dashed;
-}
-
-/* CTA buttons */
-.cta-buttons {
-  display: flex;
-  gap: 1rem;
-  justify-content: center;
-}
-
-.cta-button {
-  display: inline-block;
-  padding: 0.75rem 2rem;
-  border-radius: var(--radius);
-  text-decoration: none;
-  font-weight: 600;
-  transition: all 0.2s;
-}
-
-.cta-button.primary {
-  background: var(--primary);
-  color: white;
-}
-
-.cta-button.primary:hover {
-  background: var(--primary-hover);
 }
 
 /* Breadcrumb navigation */
@@ -1072,48 +994,8 @@ footer {
   margin-top: 0.25rem;
 }
 
-/* Trail grid */
-.trail-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-  gap: 1rem;
-}
-
-.trail-card {
-  display: block;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 1.5rem;
-  text-decoration: none;
-  color: inherit;
-  transition: all 0.2s;
-}
-
-.trail-card:hover {
-  border-color: var(--primary);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
-}
-
-.trail-card h2 {
-  margin-bottom: 0.5rem;
-}
-
-.trail-meta {
-  display: flex;
-  gap: 1rem;
-  color: var(--text-muted);
-  font-size: 0.875rem;
-}
-
 /* No results message */
 .no-results {
-  text-align: center;
-  padding: 2rem;
-  color: var(--text-muted);
-}
-
-.loading {
   text-align: center;
   padding: 2rem;
   color: var(--text-muted);

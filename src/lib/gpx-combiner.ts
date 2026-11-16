@@ -1,6 +1,6 @@
 import type { GpxPoint, GpxWaypoint, CombineOptions, CombineResult, RouteGap } from './types';
 import { parseGpx, generateGpx } from './gpx-parser';
-import { haversineDistance2D } from './distance';
+import { haversineDistance } from './distance';
 
 const DEFAULT_OPTIONS: CombineOptions = {
   trackName: 'Combined Track',
@@ -34,7 +34,7 @@ function getEndPoint(segment: RouteSegment): GpxPoint {
  * Calculate distance between two points
  */
 function distanceBetween(p1: GpxPoint, p2: GpxPoint): number {
-  return haversineDistance2D(p1.lat, p1.lon, p2.lat, p2.lon);
+  return haversineDistance(p1.lat, p1.lon, p2.lat, p2.lon);
 }
 
 /**
@@ -164,19 +164,13 @@ export function combineGpx(
   for (let fileIndex = 0; fileIndex < gpxContents.length; fileIndex++) {
     const gpxContent = gpxContents[fileIndex];
     const gpxData = parseGpx(gpxContent);
-    const filePoints: GpxPoint[] = [];
-
-    // Collect all track points from this file
-    for (const track of gpxData.tracks) {
-      for (const segment of track.segments) {
-        filePoints.push(...segment.points);
-      }
-    }
-
-    // Collect all route points from this file
-    for (const route of gpxData.routes) {
-      filePoints.push(...route.points);
-    }
+    // Track points first, then route points. concat/flat rather than
+    // push(...points): spreading a long track into arguments overflows the
+    // call stack somewhere past ~125k points.
+    const filePoints: GpxPoint[] = [
+      ...gpxData.tracks.flatMap(track => track.segments),
+      ...gpxData.routes,
+    ].flatMap(part => part.points);
 
     // Create a segment for this file if it has points
     if (filePoints.length > 0) {
@@ -188,7 +182,9 @@ export function combineGpx(
     }
 
     // Combine waypoints
-    allWaypoints.push(...gpxData.waypoints);
+    for (const waypoint of gpxData.waypoints) {
+      allWaypoints.push(waypoint);
+    }
   }
 
   // Order segments if auto-ordering is enabled
@@ -201,10 +197,7 @@ export function combineGpx(
   const reordered = opts.autoOrder && wasReordered(orderedSegments);
 
   // Combine all points from ordered segments
-  const allPoints: GpxPoint[] = [];
-  for (const segment of orderedSegments) {
-    allPoints.push(...segment.points);
-  }
+  const allPoints: GpxPoint[] = orderedSegments.flatMap(segment => segment.points);
 
   // Remove duplicate waypoints if requested
   const finalWaypoints = opts.removeDuplicateWaypoints

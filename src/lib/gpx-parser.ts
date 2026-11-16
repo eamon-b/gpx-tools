@@ -85,6 +85,23 @@ export function escapeXml(str: string): string {
 }
 
 /**
+ * The child elements of a `<wpt>` after `<ele>`, in GPX 1.1 schema order
+ * (name, cmt, desc, link, sym, type), one string per element, unindented.
+ * Shared by every writer so none of them drops the optional fields a device
+ * uses to pick a waypoint's icon.
+ */
+export function waypointChildElements(wpt: GpxWaypoint): string[] {
+  const lines: string[] = [];
+  if (wpt.name) lines.push(`<name>${escapeXml(wpt.name)}</name>`);
+  if (wpt.cmt) lines.push(`<cmt>${escapeXml(wpt.cmt)}</cmt>`);
+  if (wpt.desc) lines.push(`<desc>${escapeXml(wpt.desc)}</desc>`);
+  if (wpt.link) lines.push(`<link href="${escapeXml(wpt.link)}" />`);
+  if (wpt.sym) lines.push(`<sym>${escapeXml(wpt.sym)}</sym>`);
+  if (wpt.type) lines.push(`<type>${escapeXml(wpt.type)}</type>`);
+  return lines;
+}
+
+/**
  * Generate GPX XML from structured data
  */
 export function generateGpx(
@@ -107,12 +124,8 @@ export function generateGpx(
       xml += `    <ele>${wpt.ele}</ele>
 `;
     }
-    if (wpt.name) {
-      xml += `    <name>${escapeXml(wpt.name)}</name>
-`;
-    }
-    if (wpt.desc) {
-      xml += `    <desc>${escapeXml(wpt.desc)}</desc>
+    for (const line of waypointChildElements(wpt)) {
+      xml += `    ${line}
 `;
     }
     xml += `  </wpt>
@@ -201,12 +214,7 @@ export function writeGpx(data: GpxData, metadata: GpxMetadata = {}): string {
       `  <wpt lat="${formatCoord(wpt.lat, precision)}" lon="${formatCoord(wpt.lon, precision)}">`
     );
     if (wpt.ele !== 0) parts.push(`    <ele>${Math.round(wpt.ele * 10) / 10}</ele>`);
-    if (wpt.name) parts.push(`    <name>${escapeXml(wpt.name)}</name>`);
-    if (wpt.cmt) parts.push(`    <cmt>${escapeXml(wpt.cmt)}</cmt>`);
-    if (wpt.desc) parts.push(`    <desc>${escapeXml(wpt.desc)}</desc>`);
-    if (wpt.link) parts.push(`    <link href="${escapeXml(wpt.link)}" />`);
-    if (wpt.sym) parts.push(`    <sym>${escapeXml(wpt.sym)}</sym>`);
-    if (wpt.type) parts.push(`    <type>${escapeXml(wpt.type)}</type>`);
+    for (const line of waypointChildElements(wpt)) parts.push(`    ${line}`);
     parts.push('  </wpt>');
   }
 

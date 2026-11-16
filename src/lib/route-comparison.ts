@@ -311,7 +311,10 @@ export function compareRoutes(
 
   // Calculate shared distance
   const sharedDistance = sharedSegments.reduce((sum, seg) => sum + (seg.endDist - seg.startDist), 0);
-  const sharedPercentage = (sharedDistance / route1Stats.totalDistance) * 100;
+  // A zero-length route 1 (a single point, or repeated identical points) has
+  // no distance to share; 0 / 0 would put NaN in the UI and the CSV.
+  const sharedPercentage =
+    route1Stats.totalDistance > 0 ? (sharedDistance / route1Stats.totalDistance) * 100 : 0;
 
   return {
     route1Stats,

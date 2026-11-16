@@ -266,3 +266,42 @@ describe('format helpers', () => {
     expect(formatDateISO(new Date(Date.UTC(2026, 0, 14, 23)), -8)).toBe('2026-01-14');
   });
 });
+
+describe('formatDaylightHours rounding', () => {
+  it('carries a rounded-up minute into the hour instead of printing 60m', () => {
+    expect(formatDaylightHours(5.9999)).toBe('6h 0m');
+    expect(formatDaylightHours(11.995)).toBe('12h 0m');
+  });
+
+  it('never prints a negative duration', () => {
+    expect(formatDaylightHours(-0.5)).toBe('0h 0m');
+  });
+});
+
+describe('createDaylightPlan input guards', () => {
+  const route = [
+    { lat: 45, lon: 7 },
+    { lat: 45.5, lon: 7 },
+  ];
+
+  it('rejects a non-positive daily target instead of returning an empty plan', () => {
+    expect(() => createDaylightPlan(route, { startDate: '2026-06-01', dailyTargetKm: 0 })).toThrow();
+    expect(() => createDaylightPlan(route, { startDate: '2026-06-01', dailyTargetKm: -5 })).toThrow();
+  });
+
+  it('rejects an empty route', () => {
+    expect(() => createDaylightPlan([], { startDate: '2026-06-01', dailyTargetKm: 20 })).toThrow();
+  });
+
+  it('clamps available hiking hours at zero when the offsets exceed the day', () => {
+    const plan = createDaylightPlan(route, {
+      startDate: '2026-12-21',
+      dailyTargetKm: 20,
+      startTimeOffset: 600,
+      endTimeOffset: 600,
+    });
+    for (const day of plan.days) {
+      expect(day.hikingHoursAvailable).toBe(0);
+    }
+  });
+});

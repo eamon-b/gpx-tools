@@ -372,3 +372,28 @@ describe('GPX output escaping', () => {
     }
   });
 });
+
+describe('generateGpx waypoint fields', () => {
+  it('keeps the optional type/cmt/sym/link a parsed waypoint carries', () => {
+    const waypoint: GpxWaypoint = {
+      lat: 1,
+      lon: 2,
+      ele: 0,
+      name: 'Hut & Spring',
+      desc: 'Sleeps 8',
+      type: 'camping',
+      cmt: 'Book ahead',
+      sym: 'Campground',
+      link: 'https://example.test/hut?a=1&b=2',
+    };
+
+    const [parsed] = parseGpx(generateGpx('T', [], [waypoint])).waypoints;
+
+    expect(parsed).toEqual(waypoint);
+  });
+
+  it('writes nothing extra for a waypoint without them', () => {
+    const xml = generateGpx('T', [], [{ lat: 1, lon: 2, ele: 0, name: 'A', desc: '' }]);
+    expect(xml).not.toMatch(/<(type|cmt|sym|link|desc)/);
+  });
+});
