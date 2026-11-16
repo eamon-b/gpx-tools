@@ -10,7 +10,7 @@ A web application for trail planning and GPX file processing. Features both clie
 - Configurable max points per file and waypoint inclusion distance
 
 ### Travel Plan Processor (`/tools/planner.html`)
-- Parse Caltopo CSV travel plan exports
+- Parse Caltopo CSV travel plan exports, or build the same datasheet from a GPX file's track and waypoints
 - Calculate cumulative distance, ascent, and descent
 - Automatically identify resupply points based on keywords
 - Generate processed travel plan and resupply summary CSVs
@@ -73,7 +73,7 @@ vercel dev
 
 ### Automated Tests
 
-The project uses [Vitest](https://vitest.dev/) with jsdom for testing. Tests cover the core library modules.
+The project uses [Vitest](https://vitest.dev/) with jsdom for testing. Tests are colocated with the code they cover: every module in `src/lib/` and the `overpass` and `elevation` API handlers have a `*.test.ts` next to them.
 
 ```bash
 # Run all tests
@@ -82,26 +82,13 @@ npm test
 # Run tests in watch mode
 npm test -- --watch
 
-# Run tests with UI
-npm test -- --ui
-
 # Run a specific test file
 npm test -- src/lib/distance.test.ts
 ```
 
-### Test Files
-
-| File | Coverage |
-|------|----------|
-| `distance.test.ts` | Haversine distance calculations, waypoint filtering |
-| `gpx-parser.test.ts` | GPX XML parsing and generation |
-| `csv-processor.test.ts` | CSV parsing, unit conversion, resupply detection |
-| `gpx-splitter.test.ts` | Track splitting, waypoint association |
-| `sample-test-gpx.test.ts` | Integration test with real sample GPX file |
-
 ### Sample Data
 
-The `samples/` directory can contain test data files:
+`sample-test-gpx.test.ts` and `gpx-sample-comparison.test.ts` are integration tests that run against real files in a `samples/` directory at the repository root. The directory is not checked in, so they are skipped unless you add one:
 
 - GPX files with tracks and waypoints for testing the splitter
 - CSV files exported from Caltopo for testing the travel plan processor
@@ -138,7 +125,7 @@ Request bodies for `/api/overpass` (corridor vertices travel as compact `[lat, l
 ```
 
 Features:
-- Rate limiting (configurable, default: 10 requests/minute; `X-RateLimit-Remaining`)
+- Rate limiting per IP (configurable; default 10 requests/minute for POI queries, 30 for elevation; `X-RateLimit-Remaining`)
 - Response caching via Redis (Upstash), keyed by the coordinate-rounded request (`X-Cache: HIT` / `MISS` / `BYPASS`)
 - Redis is best effort: if it is unreachable the request is still served (cache bypassed, rate limit fails open)
 - Transient upstream failures (Overpass 429/504 or a timeout) are returned as `503` with `Retry-After`; other upstream errors as `502`
@@ -169,7 +156,8 @@ vercel --prod
 3. **Add environment variables**:
    ```bash
    vercel env add ALLOWED_ORIGINS          # Required: comma-separated allowed origins
-   vercel env add RATE_LIMIT_PER_MINUTE    # Optional, default: 10
+   vercel env add RATE_LIMIT_PER_MINUTE    # Optional, default: 10 (POI queries per IP)
+   vercel env add ELEVATION_RATE_LIMIT_PER_MINUTE  # Optional, default: 30
    vercel env add CACHE_TTL_SECONDS        # Optional, default: 604800 (7 days)
    ```
 

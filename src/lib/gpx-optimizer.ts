@@ -8,11 +8,8 @@ import type {
   OptimizationResult,
   OptimizationStats
 } from './types';
-import { parseGpx, escapeXml } from './gpx-parser';
-import { haversineDistance2D, haversineDistance3D } from './distance';
-
-// Constants
-const EARTH_RADIUS_METERS = 6371000;
+import { parseGpx, escapeXml, waypointChildElements } from './gpx-parser';
+import { EARTH_RADIUS_METERS, haversineDistance2D, haversineDistance3D } from './distance';
 
 // Default optimization options
 export const GPX_OPTIMIZER_DEFAULTS: OptimizationOptions = {
@@ -531,12 +528,8 @@ export function generateOptimizedGpx(
       xml += `    <ele>${wpt.ele}</ele>
 `;
     }
-    if (wpt.name) {
-      xml += `    <name>${escapeXml(wpt.name)}</name>
-`;
-    }
-    if (wpt.desc) {
-      xml += `    <desc>${escapeXml(wpt.desc)}</desc>
+    for (const line of waypointChildElements(wpt)) {
+      xml += `    ${line}
 `;
     }
     xml += `  </wpt>
@@ -684,23 +677,24 @@ export function buildNearestPointIndex(
 }
 
 /**
- * Get all points from a GPX data structure (from all tracks and segments)
+ * Every point of a set of tracks, in order.
+ *
+ * flatMap rather than push(...points): spreading a long segment into
+ * arguments overflows the call stack somewhere past ~125k points, which would
+ * surface as a RangeError instead of the "point count exceeds maximum" error.
+ */
+function flattenTracks(tracks: GpxTrack[]): GpxPoint[] {
+  return tracks.flatMap(track => track.segments.flatMap(segment => segment.points));
+}
+
+/**
+ * Get all points from a GPX data structure (tracks first, then routes)
  */
 function getAllPoints(gpxData: GpxData): GpxPoint[] {
-  const points: GpxPoint[] = [];
-
-  for (const track of gpxData.tracks) {
-    for (const segment of track.segments) {
-      points.push(...segment.points);
-    }
-  }
-
-  // Also include route points
-  for (const route of gpxData.routes) {
-    points.push(...route.points);
-  }
-
-  return points;
+  return [
+    ...gpxData.tracks.flatMap(track => track.segments),
+    ...gpxData.routes,
+  ].flatMap(part => part.points);
 }
 
 /**
@@ -801,9 +795,19 @@ export function optimizeGpx(
   // Truncate start/end for privacy at the file level (not per segment),
   // so multi-segment files only lose distance at the file's start and end
   let waypoints = gpxData.waypoints;
+  // What the optimized output is validated against. Truncation removes
+  // distance on purpose, so when it is on the baseline is the truncated track:
+  // otherwise trimming 500 m off a short ride reports "distance decreased" and
+  // fails a file that was simplified perfectly well.
+  let baseline: { distance: number; elevationGain: number } = originalStats;
   if (opts.truncateStart > 0 || opts.truncateEnd > 0) {
-    const pointsBeforeTruncation = allTracks.flatMap(t => t.segments.flatMap(s => s.points));
+    const pointsBeforeTruncation = flattenTracks(allTracks);
     allTracks = truncateTracks(allTracks, opts.truncateStart, opts.truncateEnd);
+    const pointsAfterTruncation = flattenTracks(allTracks);
+    baseline = {
+      distance: calculateTrackDistance(pointsAfterTruncation),
+      elevationGain: calculateElevationStats(pointsAfterTruncation).gain,
+    };
 
     // Also drop waypoints belonging to the truncated region: a waypoint whose
     // nearest track point was trimmed away (e.g. "Home" at the track start)
@@ -811,7 +815,7 @@ export function optimizeGpx(
     // it verbatim would defeat the privacy feature. Waypoints closest to a
     // kept track point (resupply towns, mid-route POIs) are preserved.
     // truncateTracks reuses the original point objects, so identity works here.
-    const keptPoints = new Set(allTracks.flatMap(t => t.segments.flatMap(s => s.points)));
+    const keptPoints = new Set(pointsAfterTruncation);
     const nearest = buildNearestPointIndex(pointsBeforeTruncation);
     waypoints = waypoints.filter(wpt => {
       const index = nearest(wpt.lat, wpt.lon);
@@ -830,31 +834,25 @@ export function optimizeGpx(
   const optimizedContent = generateOptimizedGpx(optimizedTracks, opts, waypoints);
 
   // Get optimized stats
-  const optimizedPoints: GpxPoint[] = [];
-  for (const track of optimizedTracks) {
-    for (const segment of track.segments) {
-      optimizedPoints.push(...segment.points);
-    }
-  }
+  const optimizedPoints = flattenTracks(optimizedTracks);
   const optimizedStats = calculateStats(optimizedPoints, optimizedContent);
 
   // Validation checks
-  if (originalStats.distance > 0) {
-    const distanceChange = (optimizedStats.distance - originalStats.distance) / originalStats.distance;
+  if (baseline.distance > 0) {
+    const distanceChange = (optimizedStats.distance - baseline.distance) / baseline.distance;
     if (Math.abs(distanceChange) > opts.maxDistanceChangeRatio) {
       const direction = distanceChange > 0 ? 'increased' : 'decreased';
       warnings.push(`Distance ${direction} by ${(Math.abs(distanceChange) * 100).toFixed(1)}% (threshold: ${(opts.maxDistanceChangeRatio * 100).toFixed(1)}%)`);
     }
   }
 
-  if (originalStats.elevationGain > 0) {
-    const elevationChange = (optimizedStats.elevationGain - originalStats.elevationGain) / originalStats.elevationGain;
+  if (baseline.elevationGain > 0) {
+    const elevationChange = (optimizedStats.elevationGain - baseline.elevationGain) / baseline.elevationGain;
     if (Math.abs(elevationChange) > opts.maxElevationChangeRatio) {
       const direction = elevationChange > 0 ? 'increased' : 'decreased';
       warnings.push(`Elevation gain ${direction} by ${(Math.abs(elevationChange) * 100).toFixed(1)}% (threshold: ${(opts.maxElevationChangeRatio * 100).toFixed(1)}%)`);
     }
   }
-
 
   if (optimizedStats.pointCount < 2) {
     warnings.push('Warning: Less than 2 points after optimization');

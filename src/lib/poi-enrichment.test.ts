@@ -492,6 +492,12 @@ describe("exportPOIsToCSV", () => {
     expect(csv).toContain("Plain Spring,water");
     expect(csv).not.toContain('"Plain Spring"');
   });
+
+  it("neutralises a name that a spreadsheet would run as a formula", () => {
+    const csv = exportPOIsToCSV([makeEnriched('=HYPERLINK("http://evil.test")')]);
+    const row = csv.split("\n")[1];
+    expect(row.startsWith(`"'=HYPERLINK(`)).toBe(true);
+  });
 });
 
 describe("exportPOIsToGPX", () => {

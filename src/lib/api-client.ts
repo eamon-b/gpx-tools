@@ -380,7 +380,7 @@ export class APIClient {
       onProgress?.(completed, locations.length);
 
       // Small delay between batches to be nice to the server
-      if (batches.indexOf(batch) < batches.length - 1) {
+      if (completed < locations.length) {
         await sleep(100);
       }
     }
@@ -418,23 +418,28 @@ export function getBoundsFromPoints(
   points: { lat: number; lon: number }[],
   bufferKm: number = 5
 ): BBox {
-  const lats = points.map((p) => p.lat);
-  const lons = points.map((p) => p.lon);
+  // A plain loop: Math.min(...lats) overflows the call stack on a long track.
+  let south = Infinity;
+  let north = -Infinity;
+  let west = Infinity;
+  let east = -Infinity;
+  for (const p of points) {
+    if (p.lat < south) south = p.lat;
+    if (p.lat > north) north = p.lat;
+    if (p.lon < west) west = p.lon;
+    if (p.lon > east) east = p.lon;
+  }
 
   // Approximate degrees per km
   const latBuffer = bufferKm / 111;
   const lonBuffer =
-    bufferKm /
-    (111 *
-      Math.cos(
-        (((Math.min(...lats) + Math.max(...lats)) / 2) * Math.PI) / 180
-      ));
+    bufferKm / (111 * Math.cos((((south + north) / 2) * Math.PI) / 180));
 
   return {
-    south: Math.min(...lats) - latBuffer,
-    north: Math.max(...lats) + latBuffer,
-    west: Math.min(...lons) - lonBuffer,
-    east: Math.max(...lons) + lonBuffer,
+    south: south - latBuffer,
+    north: north + latBuffer,
+    west: west - lonBuffer,
+    east: east + lonBuffer,
   };
 }
 

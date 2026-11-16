@@ -24,31 +24,16 @@ export function haversineDistance(
 }
 
 /**
- * Calculate 2D (horizontal) distance between two coordinate pairs using Haversine formula
- * Returns distance in meters
+ * Alias of `haversineDistance`, kept for callers that want the "2D" spelled
+ * out next to `haversineDistance3D`.
  */
-export function haversineDistance2D(
-  lat1: number,
-  lon1: number,
-  lat2: number,
-  lon2: number
-): number {
-  const φ1 = lat1 * Math.PI / 180;
-  const φ2 = lat2 * Math.PI / 180;
-  const Δφ = (lat2 - lat1) * Math.PI / 180;
-  const Δλ = (lon2 - lon1) * Math.PI / 180;
-
-  const a = Math.sin(Δφ / 2) ** 2 +
-            Math.cos(φ1) * Math.cos(φ2) * Math.sin(Δλ / 2) ** 2;
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return EARTH_RADIUS_METERS * c;
-}
+export const haversineDistance2D = haversineDistance;
 
 /**
  * Calculate distance between two GpxPoints (2D, ignoring elevation)
  */
 export function pointToPointDistance(p1: GpxPoint, p2: GpxPoint): number {
-  return haversineDistance2D(p1.lat, p1.lon, p2.lat, p2.lon);
+  return haversineDistance(p1.lat, p1.lon, p2.lat, p2.lon);
 }
 
 /**
@@ -63,16 +48,7 @@ export function haversineDistance3D(
   lon2: number,
   ele2: number
 ): number {
-  const φ1 = lat1 * Math.PI / 180;
-  const φ2 = lat2 * Math.PI / 180;
-  const Δφ = (lat2 - lat1) * Math.PI / 180;
-  const Δλ = (lon2 - lon1) * Math.PI / 180;
-
-  const a = Math.sin(Δφ / 2) ** 2 +
-            Math.cos(φ1) * Math.cos(φ2) * Math.sin(Δλ / 2) ** 2;
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  const horizontalDist = EARTH_RADIUS_METERS * c;
-
+  const horizontalDist = haversineDistance(lat1, lon1, lat2, lon2);
   const elevationDiff = ele2 - ele1;
   return Math.sqrt(horizontalDist ** 2 + elevationDiff ** 2);
 }
@@ -89,7 +65,7 @@ export function waypointToPointDistance(
   waypoint: GpxWaypoint,
   point: GpxPoint
 ): number {
-  return haversineDistance2D(waypoint.lat, waypoint.lon, point.lat, point.lon);
+  return haversineDistance(waypoint.lat, waypoint.lon, point.lat, point.lon);
 }
 
 /**

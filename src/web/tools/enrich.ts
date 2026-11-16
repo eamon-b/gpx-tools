@@ -24,6 +24,8 @@ import {
   type MapPoint,
 } from "../shared/map-utils.js";
 import { escapeHtml } from "../shared/html-utils.js";
+import { setupUploadArea, showFileInfo } from "../shared/file-utils.js";
+import { PREFS_KEY, savePrefs } from "../shared/prefs.js";
 
 // DOM Elements
 const gpxUploadArea = document.getElementById("gpx-upload-area")!;
@@ -98,12 +100,6 @@ const markersByKey = new Map<string, L.CircleMarker>();
 const categoryLayers = new Map<POIType, L.LayerGroup>();
 
 // Utility functions
-function formatFileSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
 // Inline error display (replaces alert())
 function showError(message: string): void {
   errorArea.textContent = message;
@@ -113,66 +109,6 @@ function showError(message: string): void {
 function clearError(): void {
   errorArea.textContent = "";
   errorArea.setAttribute("hidden", "");
-}
-
-// Upload handling
-function setupUploadArea(
-  area: HTMLElement,
-  input: HTMLInputElement,
-  fileInfo: HTMLElement,
-  onFile: (file: File | null) => void
-): void {
-  area.addEventListener("click", () => {
-    if (!area.classList.contains("has-file")) {
-      input.click();
-    }
-  });
-
-  area.addEventListener("dragover", (e) => {
-    e.preventDefault();
-    area.classList.add("dragover");
-  });
-
-  area.addEventListener("dragleave", () => {
-    area.classList.remove("dragover");
-  });
-
-  area.addEventListener("drop", (e) => {
-    e.preventDefault();
-    area.classList.remove("dragover");
-    const files = e.dataTransfer?.files;
-    if (files && files.length > 0) {
-      onFile(files[0]);
-    }
-  });
-
-  input.addEventListener("change", () => {
-    if (input.files && input.files.length > 0) {
-      onFile(input.files[0]);
-    }
-  });
-
-  const clearBtn = fileInfo.querySelector(".clear-btn");
-  clearBtn?.addEventListener("click", (e) => {
-    e.stopPropagation();
-    input.value = "";
-    area.classList.remove("has-file");
-    area.querySelector(".upload-content")!.removeAttribute("hidden");
-    fileInfo.setAttribute("hidden", "");
-    onFile(null);
-  });
-}
-
-function showFileInfo(
-  area: HTMLElement,
-  fileInfo: HTMLElement,
-  file: File
-): void {
-  area.classList.add("has-file");
-  area.querySelector(".upload-content")!.setAttribute("hidden", "");
-  fileInfo.removeAttribute("hidden");
-  fileInfo.querySelector(".file-name")!.textContent = file.name;
-  fileInfo.querySelector(".file-size")!.textContent = formatFileSize(file.size);
 }
 
 // Setup upload area
@@ -654,7 +590,7 @@ downloadGpxBtn.addEventListener("click", () => {
 // ---------------------------------------------------------------------------
 
 function loadPreferences(): void {
-  const prefs = localStorage.getItem("gpx-tools-prefs");
+  const prefs = localStorage.getItem(PREFS_KEY);
   if (!prefs) return;
 
   try {
@@ -689,13 +625,7 @@ function loadPreferences(): void {
 }
 
 function savePreferences(): void {
-  let existingPrefs: Record<string, unknown> = {};
-  try {
-    existingPrefs = JSON.parse(localStorage.getItem("gpx-tools-prefs") || "{}");
-  } catch {
-    // Corrupted stored prefs - overwrite with fresh values
-  }
-  existingPrefs.enrich = {
+  savePrefs("enrich", {
     water: poiWaterCheckbox.checked,
     camping: poiCampingCheckbox.checked,
     resupply: poiResupplyCheckbox.checked,
@@ -703,8 +633,7 @@ function savePreferences(): void {
     transport: poiTransportCheckbox.checked,
     emergency: poiEmergencyCheckbox.checked,
     searchRadiusKm: searchRadiusInput.value,
-  };
-  localStorage.setItem("gpx-tools-prefs", JSON.stringify(existingPrefs));
+  });
 }
 
 // Save preferences on change

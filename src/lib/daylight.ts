@@ -270,6 +270,14 @@ export function createDaylightPlan(
     endTimeOffset = 30,
   } = options;
 
+  if (routePoints.length === 0) {
+    throw new Error('Route has no points');
+  }
+  // A zero or negative target would never advance along the route.
+  if (!(dailyTargetKm > 0) || !(hikingSpeedKmh > 0)) {
+    throw new Error('Daily target distance and hiking speed must be greater than zero');
+  }
+
   const pointsWithDist = calculateCumulativeDistances(routePoints);
   const totalDistance = pointsWithDist[pointsWithDist.length - 1].dist;
   const estimatedDays = Math.ceil(totalDistance / dailyTargetKm);
@@ -332,7 +340,8 @@ export function createDaylightPlan(
         daylight.sunset.getTime() - endTimeOffset * 60000 -
         (daylight.sunrise.getTime() + startTimeOffset * 60000)
       );
-      hikingHoursAvailable = availableMs / (1000 * 60 * 60);
+      // Offsets longer than the day itself leave nothing, not negative hours.
+      hikingHoursAvailable = Math.max(0, availableMs / (1000 * 60 * 60));
     }
 
     const nightHikingRequired = hikingHoursNeeded > hikingHoursAvailable;
@@ -408,9 +417,10 @@ export function formatTime(date: Date, utcOffsetHours?: number): string {
  * Format daylight hours as Xh Ym
  */
 export function formatDaylightHours(hours: number): string {
-  const h = Math.floor(hours);
-  const m = Math.round((hours - h) * 60);
-  return `${h}h ${m}m`;
+  // Round to whole minutes first: rounding the minutes part on its own turns
+  // 5.999 h into "5h 60m".
+  const totalMinutes = Math.max(0, Math.round(hours * 60));
+  return `${Math.floor(totalMinutes / 60)}h ${totalMinutes % 60}m`;
 }
 
 /**

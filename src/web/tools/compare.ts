@@ -4,6 +4,9 @@ import { saveAs } from 'file-saver';
 import L from 'leaflet';
 import { Chart, registerables } from 'chart.js';
 import { initializeMap, fitMapToBounds, createRoutePolyline, type MapPoint } from '../shared/map-utils.js';
+import { haversineDistance } from '../../lib/distance.js';
+import { setupUploadArea, showFileInfo, stripExtension } from '../shared/file-utils.js';
+import { PREFS_KEY, savePrefs } from '../shared/prefs.js';
 
 // Register Chart.js components
 Chart.register(...registerables);
@@ -56,68 +59,6 @@ function readNumericInput(input: HTMLInputElement, fallback: number, min: number
   return Math.min(max, Math.max(min, value));
 }
 
-function formatFileSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-// Upload handling
-function setupUploadArea(
-  area: HTMLElement,
-  input: HTMLInputElement,
-  fileInfo: HTMLElement,
-  onFile: (file: File | null) => void
-): void {
-  area.addEventListener('click', () => {
-    if (!area.classList.contains('has-file')) {
-      input.click();
-    }
-  });
-
-  area.addEventListener('dragover', (e) => {
-    e.preventDefault();
-    area.classList.add('dragover');
-  });
-
-  area.addEventListener('dragleave', () => {
-    area.classList.remove('dragover');
-  });
-
-  area.addEventListener('drop', (e) => {
-    e.preventDefault();
-    area.classList.remove('dragover');
-    const files = e.dataTransfer?.files;
-    if (files && files.length > 0) {
-      onFile(files[0]);
-    }
-  });
-
-  input.addEventListener('change', () => {
-    if (input.files && input.files.length > 0) {
-      onFile(input.files[0]);
-    }
-  });
-
-  const clearBtn = fileInfo.querySelector('.clear-btn');
-  clearBtn?.addEventListener('click', (e) => {
-    e.stopPropagation();
-    input.value = '';
-    area.classList.remove('has-file');
-    area.querySelector('.upload-content')!.removeAttribute('hidden');
-    fileInfo.setAttribute('hidden', '');
-    onFile(null);
-  });
-}
-
-function showFileInfo(area: HTMLElement, fileInfo: HTMLElement, file: File): void {
-  area.classList.add('has-file');
-  area.querySelector('.upload-content')!.setAttribute('hidden', '');
-  fileInfo.removeAttribute('hidden');
-  fileInfo.querySelector('.file-name')!.textContent = file.name;
-  fileInfo.querySelector('.file-size')!.textContent = formatFileSize(file.size);
-}
-
 function updateCompareButton(): void {
   compareBtn.disabled = !(route1File && route2File);
 }
@@ -144,31 +85,21 @@ setupUploadArea(route2UploadArea, route2FileInput, route2FileInfo, (file) => {
 // Extract points from GPX
 function extractPoints(gpxContent: string): RoutePoint[] {
   const gpxData = parseGpx(gpxContent);
-  const points: RoutePoint[] = [];
+  const toRoutePoint = (p: { lat: number; lon: number; ele: number }): RoutePoint => ({
+    lat: p.lat,
+    lon: p.lon,
+    ele: p.ele,
+  });
 
-  // Try tracks first
-  for (const track of gpxData.tracks) {
-    for (const segment of track.segments) {
-      points.push(...segment.points.map(p => ({
-        lat: p.lat,
-        lon: p.lon,
-        ele: p.ele,
-      })));
-    }
-  }
+  // Try tracks first. flatMap, not push(...points): spreading a long segment
+  // into arguments overflows the call stack.
+  const trackPoints = gpxData.tracks.flatMap(track =>
+    track.segments.flatMap(segment => segment.points.map(toRoutePoint))
+  );
+  if (trackPoints.length > 0) return trackPoints;
 
   // Fall back to routes
-  if (points.length === 0) {
-    for (const route of gpxData.routes) {
-      points.push(...route.points.map(p => ({
-        lat: p.lat,
-        lon: p.lon,
-        ele: p.ele,
-      })));
-    }
-  }
-
-  return points;
+  return gpxData.routes.flatMap(route => route.points.map(toRoutePoint));
 }
 
 // Compare routes
@@ -228,8 +159,9 @@ compareBtn.addEventListener('click', async () => {
     renderComparisonMap(route1Points, route2Points, comparison);
     renderElevationChart(route1Points, route2Points);
 
+    // Back to the Shared tab: the list below is rebuilt for the new comparison
+    segmentTabs.forEach(t => t.classList.toggle('active', (t as HTMLElement).dataset.type === 'shared'));
     renderSegments('shared');
-    setupSegmentTabs();
 
   } catch (error) {
     alert(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
@@ -310,25 +242,25 @@ function focusSegmentOnMap(segment: RouteSegment): void {
   document.getElementById('comparison-map')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
-// Setup segment tab filtering
-function setupSegmentTabs(): void {
-  const tabs = document.querySelectorAll('.segment-tab');
-  tabs.forEach(tab => {
-    tab.addEventListener('click', () => {
-      tabs.forEach(t => t.classList.remove('active'));
-      tab.classList.add('active');
-      const type = (tab as HTMLElement).dataset.type as 'shared' | 'route1' | 'route2';
-      renderSegments(type);
-    });
+// Segment tab filtering. The tabs are static markup, so the handlers are
+// attached once here; attaching them per comparison stacked up a listener
+// (and a re-render) for every run.
+const segmentTabs = document.querySelectorAll('.segment-tab');
+segmentTabs.forEach(tab => {
+  tab.addEventListener('click', () => {
+    segmentTabs.forEach(t => t.classList.remove('active'));
+    tab.classList.add('active');
+    const type = (tab as HTMLElement).dataset.type as 'shared' | 'route1' | 'route2';
+    renderSegments(type);
   });
-}
+});
 
 // Download CSV
 downloadCsvBtn.addEventListener('click', () => {
   if (!comparison) return;
   const csv = exportComparisonToCSV(comparison);
   const blob = new Blob([csv], { type: 'text/csv' });
-  const baseName = route1File?.name.replace('.gpx', '') || 'route';
+  const baseName = (route1File && stripExtension(route1File.name)) || 'route';
   saveAs(blob, `${baseName}_comparison.csv`);
 });
 
@@ -471,7 +403,7 @@ function renderElevationChart(points1: RoutePoint[], points2: RoutePoint[]): voi
   });
 }
 
-// Sample points with cumulative distance for chart
+// Sample points with cumulative distance (km) for chart
 function samplePointsWithDistance(
   points: RoutePoint[],
   sampleRate: number
@@ -483,7 +415,7 @@ function samplePointsWithDistance(
     if (i > 0) {
       const prev = points[i - 1];
       const curr = points[i];
-      totalDist += haversineDistance(prev.lat, prev.lon, curr.lat, curr.lon);
+      totalDist += haversineDistance(prev.lat, prev.lon, curr.lat, curr.lon) / 1000;
     }
 
     const ele = points[i].ele;
@@ -495,22 +427,9 @@ function samplePointsWithDistance(
   return result;
 }
 
-// Simple haversine distance calculation (km)
-function haversineDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {
-  const R = 6371;
-  const dLat = (lat2 - lat1) * Math.PI / 180;
-  const dLon = (lon2 - lon1) * Math.PI / 180;
-  const a =
-    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
-    Math.sin(dLon / 2) * Math.sin(dLon / 2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return R * c;
-}
-
 // Load preferences from localStorage
 function loadPreferences(): void {
-  const prefs = localStorage.getItem('gpx-tools-prefs');
+  const prefs = localStorage.getItem(PREFS_KEY);
   if (prefs) {
     try {
       const parsed = JSON.parse(prefs);
@@ -523,17 +442,10 @@ function loadPreferences(): void {
 }
 
 function savePreferences(): void {
-  let existingPrefs: Record<string, unknown> = {};
-  try {
-    existingPrefs = JSON.parse(localStorage.getItem('gpx-tools-prefs') || '{}');
-  } catch {
-    // Corrupted stored prefs - overwrite with fresh values
-  }
-  existingPrefs.compare = {
+  savePrefs('compare', {
     proximityThreshold: proximityInput.value,
     minSegment: minSegmentInput.value,
-  };
-  localStorage.setItem('gpx-tools-prefs', JSON.stringify(existingPrefs));
+  });
 }
 
 // Save preferences on change

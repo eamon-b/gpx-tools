@@ -1,6 +1,9 @@
 import { splitGpx, type SplitResult } from '../../lib/index.js';
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
+import { setupUploadArea, showFileInfo, stripExtension } from '../shared/file-utils.js';
+import { escapeHtml } from '../shared/html-utils.js';
+import { PREFS_KEY, savePrefs } from '../shared/prefs.js';
 
 // DOM Elements
 const gpxUploadArea = document.getElementById('gpx-upload-area')!;
@@ -22,12 +25,6 @@ let gpxFile: File | null = null;
 let gpxSplitResults: SplitResult[] = [];
 
 // Utility functions
-function formatFileSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
 function downloadFile(filename: string, content: string, mimeType: string): void {
   const blob = new Blob([content], { type: mimeType });
   saveAs(blob, filename);
@@ -44,62 +41,6 @@ function hideError(): void {
 }
 
 gpxErrorDismiss.addEventListener('click', hideError);
-
-// Upload handling
-function setupUploadArea(
-  area: HTMLElement,
-  input: HTMLInputElement,
-  fileInfo: HTMLElement,
-  onFile: (file: File | null) => void
-): void {
-  area.addEventListener('click', () => {
-    if (!area.classList.contains('has-file')) {
-      input.click();
-    }
-  });
-
-  area.addEventListener('dragover', (e) => {
-    e.preventDefault();
-    area.classList.add('dragover');
-  });
-
-  area.addEventListener('dragleave', () => {
-    area.classList.remove('dragover');
-  });
-
-  area.addEventListener('drop', (e) => {
-    e.preventDefault();
-    area.classList.remove('dragover');
-    const files = e.dataTransfer?.files;
-    if (files && files.length > 0) {
-      onFile(files[0]);
-    }
-  });
-
-  input.addEventListener('change', () => {
-    if (input.files && input.files.length > 0) {
-      onFile(input.files[0]);
-    }
-  });
-
-  const clearBtn = fileInfo.querySelector('.clear-btn');
-  clearBtn?.addEventListener('click', (e) => {
-    e.stopPropagation();
-    input.value = '';
-    area.classList.remove('has-file');
-    area.querySelector('.upload-content')!.removeAttribute('hidden');
-    fileInfo.setAttribute('hidden', '');
-    onFile(null);
-  });
-}
-
-function showFileInfo(area: HTMLElement, fileInfo: HTMLElement, file: File): void {
-  area.classList.add('has-file');
-  area.querySelector('.upload-content')!.setAttribute('hidden', '');
-  fileInfo.removeAttribute('hidden');
-  fileInfo.querySelector('.file-name')!.textContent = file.name;
-  fileInfo.querySelector('.file-size')!.textContent = formatFileSize(file.size);
-}
 
 // GPX handling
 setupUploadArea(gpxUploadArea, gpxFileInput, gpxFileInfo, (file) => {
@@ -152,7 +93,7 @@ gpxProcessBtn.addEventListener('click', async () => {
     gpxFileList.innerHTML = gpxSplitResults.map((result, i) => `
       <div class="file-item">
         <div class="file-item-info">
-          <span class="file-item-name">${result.filename}</span>
+          <span class="file-item-name">${escapeHtml(result.filename)}</span>
           <span class="file-item-meta">${result.pointCount.toLocaleString()} points, ${result.waypointCount} waypoints</span>
         </div>
         <button class="download-btn" data-index="${i}">Download</button>
@@ -186,13 +127,13 @@ gpxDownloadAll.addEventListener('click', async () => {
   }
 
   const blob = await zip.generateAsync({ type: 'blob' });
-  const baseName = gpxFile?.name.replace('.gpx', '') || 'gpx-split';
+  const baseName = (gpxFile && stripExtension(gpxFile.name)) || 'gpx-split';
   saveAs(blob, `${baseName}-split.zip`);
 });
 
 // Load preferences from localStorage
 function loadPreferences(): void {
-  const prefs = localStorage.getItem('gpx-tools-prefs');
+  const prefs = localStorage.getItem(PREFS_KEY);
   if (prefs) {
     try {
       const parsed = JSON.parse(prefs);
@@ -205,12 +146,10 @@ function loadPreferences(): void {
 }
 
 function savePreferences(): void {
-  const existingPrefs = JSON.parse(localStorage.getItem('gpx-tools-prefs') || '{}');
-  existingPrefs.gpx = {
+  savePrefs('gpx', {
     maxPoints: parseInt(maxPointsInput.value),
     waypointDistance: parseFloat(waypointDistanceInput.value),
-  };
-  localStorage.setItem('gpx-tools-prefs', JSON.stringify(existingPrefs));
+  });
 }
 
 // Save preferences on change

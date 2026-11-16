@@ -4,6 +4,7 @@
  * Configure allowed origins via environment variables:
  *   - ALLOWED_ORIGINS: Comma-separated list of allowed origins
  *   - VERCEL_URL: Automatically set by Vercel, used as fallback
+ *   - PRODUCTION_URL: Optional single extra origin (e.g. a custom domain)
  *
  * In development (NODE_ENV !== 'production'), localhost origins are always allowed.
  */
@@ -47,8 +48,8 @@ export function getCorsHeaders(req: Request): Record<string, string> {
   // Check if origin is allowed (must be explicitly in the list)
   const isAllowed = allowedOrigins.length > 0 && allowedOrigins.includes(origin);
 
-  // If origin not allowed, deny access (empty string = no CORS header sent)
-  // This prevents unauthorized cross-origin requests in production
+  // If the origin is not allowed the header carries an empty value, which no
+  // origin matches, so the browser blocks the cross-origin read.
   const allowOrigin = isAllowed ? origin : '';
 
   return {
@@ -56,17 +57,4 @@ export function getCorsHeaders(req: Request): Record<string, string> {
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type',
   };
-}
-
-/**
- * Handle CORS preflight request.
- */
-export function handleCorsPreflightRequest(req: Request): Response | null {
-  if (req.method === 'OPTIONS') {
-    return new Response(null, {
-      status: 204,
-      headers: getCorsHeaders(req),
-    });
-  }
-  return null;
 }

@@ -2,6 +2,8 @@ import { processTravelPlan, processGpxTravelPlan, type ProcessResult, type Dista
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
 import { escapeHtml } from '../shared/html-utils.js';
+import { setupUploadArea, showFileInfo } from '../shared/file-utils.js';
+import { PREFS_KEY, savePrefs } from '../shared/prefs.js';
 
 // DOM Elements
 const csvUploadArea = document.getElementById('csv-upload-area')!;
@@ -27,12 +29,6 @@ let csvFile: File | null = null;
 let csvProcessResults: ProcessResult | null = null;
 
 // Utility functions
-function formatFileSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
 function downloadFile(filename: string, content: string, mimeType: string): void {
   const blob = new Blob([content], { type: mimeType });
   saveAs(blob, filename);
@@ -43,62 +39,6 @@ function updateGpxOnlyOptionsVisibility(file: File | null): void {
   gpxOnlyOptions.forEach(el => {
     el.classList.toggle('visible', isGpxFile);
   });
-}
-
-// Upload handling
-function setupUploadArea(
-  area: HTMLElement,
-  input: HTMLInputElement,
-  fileInfo: HTMLElement,
-  onFile: (file: File | null) => void
-): void {
-  area.addEventListener('click', () => {
-    if (!area.classList.contains('has-file')) {
-      input.click();
-    }
-  });
-
-  area.addEventListener('dragover', (e) => {
-    e.preventDefault();
-    area.classList.add('dragover');
-  });
-
-  area.addEventListener('dragleave', () => {
-    area.classList.remove('dragover');
-  });
-
-  area.addEventListener('drop', (e) => {
-    e.preventDefault();
-    area.classList.remove('dragover');
-    const files = e.dataTransfer?.files;
-    if (files && files.length > 0) {
-      onFile(files[0]);
-    }
-  });
-
-  input.addEventListener('change', () => {
-    if (input.files && input.files.length > 0) {
-      onFile(input.files[0]);
-    }
-  });
-
-  const clearBtn = fileInfo.querySelector('.clear-btn');
-  clearBtn?.addEventListener('click', (e) => {
-    e.stopPropagation();
-    input.value = '';
-    area.classList.remove('has-file');
-    area.querySelector('.upload-content')!.removeAttribute('hidden');
-    fileInfo.setAttribute('hidden', '');
-    onFile(null);
-  });
-}
-
-function showFileInfo(area: HTMLElement, fileInfo: HTMLElement, file: File): void {
-  area.classList.add('has-file');
-  area.querySelector('.upload-content')!.setAttribute('hidden', '');
-  fileInfo.removeAttribute('hidden');
-  fileInfo.querySelector('.file-name')!.textContent = file.name;
-  fileInfo.querySelector('.file-size')!.textContent = formatFileSize(file.size);
 }
 
 // CSV handling
@@ -241,7 +181,7 @@ csvDownloadAll.addEventListener('click', async () => {
 
 // Load preferences from localStorage
 function loadPreferences(): void {
-  const prefs = localStorage.getItem('gpx-tools-prefs');
+  const prefs = localStorage.getItem(PREFS_KEY);
   if (prefs) {
     try {
       const parsed = JSON.parse(prefs);
@@ -259,8 +199,7 @@ function loadPreferences(): void {
 }
 
 function savePreferences(): void {
-  const existingPrefs = JSON.parse(localStorage.getItem('gpx-tools-prefs') || '{}');
-  existingPrefs.csv = {
+  savePrefs('csv', {
     resupplyKeywords: resupplyKeywordsInput.value.split(',').map(k => k.trim()).filter(k => k),
     includeStartAsResupply: includeStartCheckbox.checked,
     includeEndAsResupply: includeEndCheckbox.checked,
@@ -268,8 +207,7 @@ function savePreferences(): void {
     elevationUnit: elevationUnitSelect.value,
     csvDelimiter: csvDelimiterSelect.value,
     waypointMaxDistance: parseInt(waypointMaxDistanceInput.value),
-  };
-  localStorage.setItem('gpx-tools-prefs', JSON.stringify(existingPrefs));
+  });
 }
 
 // Save preferences on change

@@ -4,6 +4,8 @@ import { saveAs } from 'file-saver';
 import L from 'leaflet';
 import { Chart, registerables } from 'chart.js';
 import { initializeMap, fitMapToBounds, createRoutePolyline, createNumberedMarker, type MapPoint } from '../shared/map-utils.js';
+import { setupUploadArea, showFileInfo, stripExtension } from '../shared/file-utils.js';
+import { PREFS_KEY, savePrefs } from '../shared/prefs.js';
 
 // Register Chart.js components
 Chart.register(...registerables);
@@ -48,68 +50,6 @@ startDateInput.value = [
 ].join('-');
 
 // Utility functions
-function formatFileSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-// Upload handling
-function setupUploadArea(
-  area: HTMLElement,
-  input: HTMLInputElement,
-  fileInfo: HTMLElement,
-  onFile: (file: File | null) => void
-): void {
-  area.addEventListener('click', () => {
-    if (!area.classList.contains('has-file')) {
-      input.click();
-    }
-  });
-
-  area.addEventListener('dragover', (e) => {
-    e.preventDefault();
-    area.classList.add('dragover');
-  });
-
-  area.addEventListener('dragleave', () => {
-    area.classList.remove('dragover');
-  });
-
-  area.addEventListener('drop', (e) => {
-    e.preventDefault();
-    area.classList.remove('dragover');
-    const files = e.dataTransfer?.files;
-    if (files && files.length > 0) {
-      onFile(files[0]);
-    }
-  });
-
-  input.addEventListener('change', () => {
-    if (input.files && input.files.length > 0) {
-      onFile(input.files[0]);
-    }
-  });
-
-  const clearBtn = fileInfo.querySelector('.clear-btn');
-  clearBtn?.addEventListener('click', (e) => {
-    e.stopPropagation();
-    input.value = '';
-    area.classList.remove('has-file');
-    area.querySelector('.upload-content')!.removeAttribute('hidden');
-    fileInfo.setAttribute('hidden', '');
-    onFile(null);
-  });
-}
-
-function showFileInfo(area: HTMLElement, fileInfo: HTMLElement, file: File): void {
-  area.classList.add('has-file');
-  area.querySelector('.upload-content')!.setAttribute('hidden', '');
-  fileInfo.removeAttribute('hidden');
-  fileInfo.querySelector('.file-name')!.textContent = file.name;
-  fileInfo.querySelector('.file-size')!.textContent = formatFileSize(file.size);
-}
-
 // Setup upload area
 setupUploadArea(gpxUploadArea, gpxFileInput, gpxFileInfo, (file) => {
   gpxFile = file;
@@ -144,19 +84,16 @@ calculateBtn.addEventListener('click', async () => {
     const content = await gpxFile.text();
     const gpxData = parseGpx(content);
 
-    // Get all track points
-    routePoints = [];
-    for (const track of gpxData.tracks) {
-      for (const segment of track.segments) {
-        routePoints.push(...segment.points.map(p => ({ lat: p.lat, lon: p.lon })));
-      }
-    }
+    // Get all track points. flatMap, not push(...points): spreading a long
+    // segment into arguments overflows the call stack.
+    const toMapPoint = (p: MapPoint): MapPoint => ({ lat: p.lat, lon: p.lon });
+    routePoints = gpxData.tracks.flatMap(track =>
+      track.segments.flatMap(segment => segment.points.map(toMapPoint))
+    );
 
     // Also check routes if no tracks
     if (routePoints.length === 0) {
-      for (const route of gpxData.routes) {
-        routePoints.push(...route.points.map(p => ({ lat: p.lat, lon: p.lon })));
-      }
+      routePoints = gpxData.routes.flatMap(route => route.points.map(toMapPoint));
     }
 
     if (routePoints.length === 0) {
@@ -165,14 +102,18 @@ calculateBtn.addEventListener('click', async () => {
 
     const points = routePoints;
 
-    const dailyTargetKm = parseFloat(dailyTargetInput.value) || 25;
-    const hikingSpeedKmh = parseFloat(hikingSpeedInput.value) || 4;
+    // Empty, zero or negative input falls back to the default: a non-positive
+    // target or speed has no meaning and would produce an empty plan.
+    const parsedTarget = parseFloat(dailyTargetInput.value);
+    const parsedSpeed = parseFloat(hikingSpeedInput.value);
+    const dailyTargetKm = parsedTarget > 0 ? parsedTarget : 25;
+    const hikingSpeedKmh = parsedSpeed > 0 ? parsedSpeed : 4;
     // Not `parseInt(...) || 30`: 0 is a valid offset (start right at sunrise
     // / end right at sunset) and must not fall back to the default
     const parsedStartOffset = parseInt(startOffsetInput.value, 10);
     const parsedEndOffset = parseInt(endOffsetInput.value, 10);
-    const startTimeOffset = Number.isNaN(parsedStartOffset) ? 30 : parsedStartOffset;
-    const endTimeOffset = Number.isNaN(parsedEndOffset) ? 30 : parsedEndOffset;
+    const startTimeOffset = Number.isNaN(parsedStartOffset) ? 30 : Math.max(0, parsedStartOffset);
+    const endTimeOffset = Number.isNaN(parsedEndOffset) ? 30 : Math.max(0, parsedEndOffset);
 
     daylightPlan = createDaylightPlan(points, {
       startDate,
@@ -181,6 +122,11 @@ calculateBtn.addEventListener('click', async () => {
       startTimeOffset,
       endTimeOffset,
     });
+
+    if (daylightPlan.days.length === 0) {
+      daylightPlan = null;
+      throw new Error('This route has no distance to plan (all of its points are in one place)');
+    }
 
     // Display results
     results.removeAttribute('hidden');
@@ -283,7 +229,7 @@ downloadCsvBtn.addEventListener('click', () => {
   if (!daylightPlan) return;
   const csv = exportDaylightPlanToCSV(daylightPlan);
   const blob = new Blob([csv], { type: 'text/csv' });
-  const baseName = gpxFile?.name.replace('.gpx', '') || 'route';
+  const baseName = (gpxFile && stripExtension(gpxFile.name)) || 'route';
   saveAs(blob, `${baseName}_daylight_plan.csv`);
 });
 
@@ -402,10 +348,7 @@ function renderDaylightChart(plan: DaylightPlan): void {
         tooltip: {
           callbacks: {
             label: (context) => {
-              const hours = context.parsed.y ?? 0;
-              const h = Math.floor(hours);
-              const m = Math.round((hours - h) * 60);
-              return `${context.dataset.label}: ${h}h ${m}m`;
+              return `${context.dataset.label}: ${formatDaylightHours(context.parsed.y ?? 0)}`;
             },
           },
         },
@@ -419,7 +362,7 @@ function renderDaylightChart(plan: DaylightPlan): void {
 
 // Load preferences from localStorage
 function loadPreferences(): void {
-  const prefs = localStorage.getItem('gpx-tools-prefs');
+  const prefs = localStorage.getItem(PREFS_KEY);
   if (prefs) {
     try {
       const parsed = JSON.parse(prefs);
@@ -434,19 +377,12 @@ function loadPreferences(): void {
 }
 
 function savePreferences(): void {
-  let existingPrefs: Record<string, unknown> = {};
-  try {
-    existingPrefs = JSON.parse(localStorage.getItem('gpx-tools-prefs') || '{}');
-  } catch {
-    // Corrupted stored prefs - overwrite with fresh values
-  }
-  existingPrefs.daylight = {
+  savePrefs('daylight', {
     dailyTarget: dailyTargetInput.value,
     hikingSpeed: hikingSpeedInput.value,
     startOffset: startOffsetInput.value,
     endOffset: endOffsetInput.value,
-  };
-  localStorage.setItem('gpx-tools-prefs', JSON.stringify(existingPrefs));
+  });
 }
 
 // Save preferences on change

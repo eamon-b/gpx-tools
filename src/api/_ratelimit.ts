@@ -33,6 +33,12 @@ export async function checkRateLimit(
 
   if (count > limit) {
     const ttl = await redis.ttl(key);
+    // No expiry on a counter that is already over the limit means the EXPIRE
+    // above never landed (the invocation died between the two commands).
+    // Without this the key would live forever and lock that client out for good.
+    if (ttl < 0) {
+      await redis.expire(key, 60);
+    }
     return { allowed: false, remaining: 0, resetIn: ttl > 0 ? ttl : 60 };
   }
 

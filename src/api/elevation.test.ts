@@ -7,8 +7,11 @@ const { redisMock } = vi.hoisted(() => ({
     expire: vi.fn(),
     ttl: vi.fn(),
     get: vi.fn(),
+    mget: vi.fn(),
     set: vi.fn(),
     del: vi.fn(),
+    pipeline: vi.fn(),
+    exec: vi.fn(),
   },
 }));
 
@@ -36,6 +39,10 @@ beforeEach(() => {
   for (const fn of Object.values(redisMock)) fn.mockReset();
   redisMock.incr.mockResolvedValue(1);
   redisMock.get.mockResolvedValue(null);
+  redisMock.mget.mockImplementation(async (...keys: string[]) => keys.map(() => null));
+  // The pipeline records its SETs on the same mock the assertions read.
+  redisMock.pipeline.mockImplementation(() => ({ set: redisMock.set, exec: redisMock.exec }));
+  redisMock.exec.mockResolvedValue([]);
 });
 
 afterEach(() => {
@@ -87,5 +94,41 @@ describe('elevation handler', () => {
     expect(redisMock.set).toHaveBeenCalledTimes(2);
     expect(redisMock.set).toHaveBeenCalledWith('elev:1:1', 100, expect.anything());
     expect(redisMock.set).toHaveBeenCalledWith('elev:3:3', 300, expect.anything());
+    // ...and written in one pipelined round trip, not one request per point.
+    expect(redisMock.exec).toHaveBeenCalledTimes(1);
+  });
+
+  it('reads the cache in one MGET and only fetches what is missing', async () => {
+    redisMock.mget.mockResolvedValue([111, null]);
+    const fn = upstream([{ latitude: 2, longitude: 2, elevation: 222 }]);
+
+    const res = await handler(post({ locations: [{ lat: 1, lon: 1 }, { lat: 2, lon: 2 }] }));
+    const body = await res.json();
+
+    expect(redisMock.mget).toHaveBeenCalledTimes(1);
+    expect(redisMock.mget).toHaveBeenCalledWith('elev:1:1', 'elev:2:2');
+    expect(body.results).toEqual([
+      { lat: 1, lon: 1, elevation: 111 },
+      { lat: 2, lon: 2, elevation: 222 },
+    ]);
+    expect(body.cached).toBe(1);
+    const [, init] = fn.mock.calls[0] as unknown as [string, RequestInit];
+    expect(JSON.parse(String(init.body)).locations).toEqual([{ lat: 2, lon: 2 }]);
+  });
+
+  it('still answers when every Redis call fails', async () => {
+    for (const fn of Object.values(redisMock)) fn.mockRejectedValue(new Error('redis down'));
+    redisMock.pipeline.mockImplementation(() => ({ set: redisMock.set, exec: redisMock.exec }));
+    upstream([{ latitude: 1, longitude: 2, elevation: 100 }]);
+
+    const res = await handler(post({ locations: [{ lat: 1, lon: 2 }] }));
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).results).toEqual([{ lat: 1, lon: 2, elevation: 100 }]);
+  });
+
+  it('rejects a malformed location with a 400, not a 500', async () => {
+    const res = await handler(post({ locations: [null] }));
+    expect(res.status).toBe(400);
   });
 });

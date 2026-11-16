@@ -1003,3 +1003,20 @@ describe('buildNearestPointIndex', () => {
     expect(buildNearestPointIndex([])(0, 0)).toBe(-1);
   });
 });
+
+describe('optimizeGpx validation with truncation', () => {
+  it('does not warn about the distance that truncation removed on purpose', () => {
+    // ~1.1 km of track at ~11 m spacing; trimming 300 m is a 27% reduction.
+    let gpx = '<?xml version="1.0"?><gpx><trk><name>T</name><trkseg>';
+    for (let i = 0; i < 100; i++) {
+      gpx += `<trkpt lat="${(i * 1e-4).toFixed(4)}" lon="0"><ele>10</ele></trkpt>`;
+    }
+    gpx += '</trkseg></trk></gpx>';
+
+    const result = optimizeGpx(gpx, 'a.gpx', { truncateStart: 300, elevationSmoothing: false });
+
+    expect(result.optimized.distance).toBeLessThan(result.original.distance * 0.8);
+    expect(result.warnings).toEqual([]);
+    expect(result.passed).toBe(true);
+  });
+});

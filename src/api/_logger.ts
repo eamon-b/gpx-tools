@@ -5,7 +5,7 @@
  * logging infrastructure and can be easily parsed by log aggregators.
  */
 
-type LogLevel = 'debug' | 'info' | 'warn' | 'error';
+type LogLevel = 'info' | 'warn' | 'error';
 
 interface LogEntry {
   level: LogLevel;
@@ -46,13 +46,4 @@ export function logWarn(context: string, message: string, extra?: Record<string,
  */
 export function logInfo(context: string, message: string, extra?: Record<string, unknown>): void {
   console.log(formatLog('info', context, message, extra));
-}
-
-/**
- * Log a debug message with context (only in development)
- */
-export function logDebug(context: string, message: string, extra?: Record<string, unknown>): void {
-  if (process.env.NODE_ENV !== 'production') {
-    console.log(formatLog('debug', context, message, extra));
-  }
 }
