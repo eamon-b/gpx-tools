@@ -125,7 +125,8 @@ Request bodies for `/api/overpass` (corridor vertices travel as compact `[lat, l
 ```
 
 Features:
-- Rate limiting per IP (configurable; default 10 requests/minute for POI queries, 30 for elevation; `X-RateLimit-Remaining`)
+- Rate limiting per IP (configurable; default 10 requests/minute for POI queries, 30 for elevation; `X-RateLimit-Remaining`). Only requests that reach the upstream service count: responses served from the cache are free
+- `/api/health` reuses a probe result for 30 seconds, so polling it does not hammer Redis, Overpass or Open-Elevation
 - Response caching via Redis (Upstash), keyed by the coordinate-rounded request (`X-Cache: HIT` / `MISS` / `BYPASS`)
 - Redis is best effort: if it is unreachable the request is still served (cache bypassed, rate limit fails open)
 - Transient upstream failures (Overpass 429/504 or a timeout) are returned as `503` with `Retry-After`; other upstream errors as `502`

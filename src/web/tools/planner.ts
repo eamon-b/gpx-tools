@@ -4,6 +4,7 @@ import { saveAs } from 'file-saver';
 import { escapeHtml } from '../shared/html-utils.js';
 import { setupUploadArea, showFileInfo } from '../shared/file-utils.js';
 import { PREFS_KEY, savePrefs } from '../shared/prefs.js';
+import { setupErrorBanner, errorText } from '../shared/error-banner.js';
 
 // DOM Elements
 const csvUploadArea = document.getElementById('csv-upload-area')!;
@@ -14,7 +15,7 @@ const csvResults = document.getElementById('csv-results')!;
 const csvStats = document.getElementById('csv-stats')!;
 const csvFileList = document.getElementById('csv-file-list')!;
 const csvDownloadAll = document.getElementById('csv-download-all')!;
-const csvError = document.getElementById('csv-error')!;
+const errorBanner = setupErrorBanner();
 const resupplyKeywordsInput = document.getElementById('resupply-keywords') as HTMLInputElement;
 const includeStartCheckbox = document.getElementById('include-start') as HTMLInputElement;
 const includeEndCheckbox = document.getElementById('include-end') as HTMLInputElement;
@@ -44,6 +45,7 @@ function updateGpxOnlyOptionsVisibility(file: File | null): void {
 // CSV handling
 setupUploadArea(csvUploadArea, csvFileInput, csvFileInfo, (file) => {
   csvFile = file;
+  errorBanner.hide();
   updateGpxOnlyOptionsVisibility(file);
   if (file) {
     showFileInfo(csvUploadArea, csvFileInfo, file);
@@ -60,8 +62,7 @@ csvProcessBtn.addEventListener('click', async () => {
 
   csvProcessBtn.disabled = true;
   csvProcessBtn.textContent = 'Processing...';
-  csvError.setAttribute('hidden', '');
-  csvError.textContent = '';
+  errorBanner.hide();
 
   try {
     const content = await csvFile.text();
@@ -159,8 +160,7 @@ csvProcessBtn.addEventListener('click', async () => {
 
   } catch (error) {
     csvResults.setAttribute('hidden', '');
-    csvError.textContent = `Error processing file: ${error instanceof Error ? error.message : 'Unknown error'}`;
-    csvError.removeAttribute('hidden');
+    errorBanner.show(`Error processing file: ${errorText(error)}`);
   } finally {
     csvProcessBtn.disabled = false;
     csvProcessBtn.textContent = 'Process Travel Plan';

@@ -1173,6 +1173,16 @@ footer a:hover {
   cursor: not-allowed;
 }
 
+/* A request is in flight: the bar pulses, since its width cannot move until it lands */
+.progress-fill.indeterminate {
+  animation: progress-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes progress-pulse {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 1; }
+}
+
 .progress-fill.cancelled {
   background: var(--text-muted);
 }

@@ -1,6 +1,5 @@
 import type {
   GpxPoint,
-  GpxData,
   GpxTrack,
   GpxSegment,
   GpxWaypoint,
@@ -688,27 +687,41 @@ function flattenTracks(tracks: GpxTrack[]): GpxPoint[] {
 }
 
 /**
- * Get all points from a GPX data structure (tracks first, then routes)
+ * Distance and elevation totals over a set of tracks, measured one segment at
+ * a time.
+ *
+ * Measuring the flattened point list instead would count the straight line
+ * from the end of one segment (or track) to the start of the next - ground
+ * nobody covered - as distance, and the height difference across that gap as
+ * climb. On a file of several disjoint tracks that can dwarf the real total.
  */
-function getAllPoints(gpxData: GpxData): GpxPoint[] {
-  return [
-    ...gpxData.tracks.flatMap(track => track.segments),
-    ...gpxData.routes,
-  ].flatMap(part => part.points);
+function measureTracks(tracks: GpxTrack[]): {
+  pointCount: number;
+  distance: number;
+  elevationGain: number;
+  elevationLoss: number;
+} {
+  const totals = { pointCount: 0, distance: 0, elevationGain: 0, elevationLoss: 0 };
+  for (const track of tracks) {
+    for (const segment of track.segments) {
+      const { gain, loss } = calculateElevationStats(segment.points);
+      totals.pointCount += segment.points.length;
+      totals.distance += calculateTrackDistance(segment.points);
+      totals.elevationGain += gain;
+      totals.elevationLoss += loss;
+    }
+  }
+  return totals;
 }
 
 /**
- * Calculate statistics for a set of points
+ * Calculate statistics for a set of tracks and the file they were read from
+ * or written to
  */
-function calculateStats(points: GpxPoint[], content: string): OptimizationStats {
-  const { gain, loss } = calculateElevationStats(points);
-
+function calculateStats(tracks: GpxTrack[], content: string): OptimizationStats {
   return {
-    pointCount: points.length,
+    ...measureTracks(tracks),
     fileSize: new TextEncoder().encode(content).length,
-    distance: calculateTrackDistance(points),
-    elevationGain: gain,
-    elevationLoss: loss
   };
 }
 
@@ -772,17 +785,6 @@ export function optimizeGpx(
   // Parse GPX
   const gpxData = parseGpx(gpxContent);
 
-  // Get original stats
-  const originalPoints = getAllPoints(gpxData);
-  const originalStats = calculateStats(originalPoints, gpxContent);
-
-  // Validate point count
-  if (opts.maxPointCount > 0 && originalStats.pointCount > opts.maxPointCount) {
-    throw new Error(
-      `Point count (${originalStats.pointCount.toLocaleString()}) exceeds maximum allowed (${opts.maxPointCount.toLocaleString()})`
-    );
-  }
-
   // Convert routes to tracks if present
   let allTracks: GpxTrack[] = [...gpxData.tracks];
   for (const route of gpxData.routes) {
@@ -791,6 +793,20 @@ export function optimizeGpx(
       segments: [{ points: route.points }]
     });
   }
+
+  // Validate point count before doing any per-point work
+  const originalPointCount = allTracks.reduce(
+    (sum, track) => sum + track.segments.reduce((n, segment) => n + segment.points.length, 0),
+    0
+  );
+  if (opts.maxPointCount > 0 && originalPointCount > opts.maxPointCount) {
+    throw new Error(
+      `Point count (${originalPointCount.toLocaleString()}) exceeds maximum allowed (${opts.maxPointCount.toLocaleString()})`
+    );
+  }
+
+  // Get original stats
+  const originalStats = calculateStats(allTracks, gpxContent);
 
   // Truncate start/end for privacy at the file level (not per segment),
   // so multi-segment files only lose distance at the file's start and end
@@ -804,10 +820,7 @@ export function optimizeGpx(
     const pointsBeforeTruncation = flattenTracks(allTracks);
     allTracks = truncateTracks(allTracks, opts.truncateStart, opts.truncateEnd);
     const pointsAfterTruncation = flattenTracks(allTracks);
-    baseline = {
-      distance: calculateTrackDistance(pointsAfterTruncation),
-      elevationGain: calculateElevationStats(pointsAfterTruncation).gain,
-    };
+    baseline = measureTracks(allTracks);
 
     // Also drop waypoints belonging to the truncated region: a waypoint whose
     // nearest track point was trimmed away (e.g. "Home" at the track start)
@@ -834,8 +847,7 @@ export function optimizeGpx(
   const optimizedContent = generateOptimizedGpx(optimizedTracks, opts, waypoints);
 
   // Get optimized stats
-  const optimizedPoints = flattenTracks(optimizedTracks);
-  const optimizedStats = calculateStats(optimizedPoints, optimizedContent);
+  const optimizedStats = calculateStats(optimizedTracks, optimizedContent);
 
   // Validation checks
   if (baseline.distance > 0) {

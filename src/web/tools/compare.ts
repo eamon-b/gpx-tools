@@ -7,6 +7,7 @@ import { initializeMap, fitMapToBounds, createRoutePolyline, type MapPoint } fro
 import { haversineDistance } from '../../lib/distance.js';
 import { setupUploadArea, showFileInfo, stripExtension } from '../shared/file-utils.js';
 import { PREFS_KEY, savePrefs } from '../shared/prefs.js';
+import { setupErrorBanner, errorText } from '../shared/error-banner.js';
 
 // Register Chart.js components
 Chart.register(...registerables);
@@ -39,6 +40,8 @@ const ascentDiff = document.getElementById('ascent-diff')!;
 const segmentList = document.getElementById('segment-list')!;
 const downloadCsvBtn = document.getElementById('download-csv')!;
 
+const errorBanner = setupErrorBanner();
+
 // State
 let route1File: File | null = null;
 let route2File: File | null = null;
@@ -70,6 +73,7 @@ setupUploadArea(route1UploadArea, route1FileInput, route1FileInfo, (file) => {
     showFileInfo(route1UploadArea, route1FileInfo, file);
   }
   results.setAttribute('hidden', '');
+  errorBanner.hide();
   updateCompareButton();
 });
 
@@ -79,6 +83,7 @@ setupUploadArea(route2UploadArea, route2FileInput, route2FileInfo, (file) => {
     showFileInfo(route2UploadArea, route2FileInfo, file);
   }
   results.setAttribute('hidden', '');
+  errorBanner.hide();
   updateCompareButton();
 });
 
@@ -108,6 +113,7 @@ compareBtn.addEventListener('click', async () => {
 
   compareBtn.disabled = true;
   compareBtn.textContent = 'Comparing...';
+  errorBanner.hide();
 
   try {
     const [content1, content2] = await Promise.all([
@@ -164,7 +170,8 @@ compareBtn.addEventListener('click', async () => {
     renderSegments('shared');
 
   } catch (error) {
-    alert(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    results.setAttribute('hidden', '');
+    errorBanner.show(`Error comparing routes: ${errorText(error)}`);
   } finally {
     compareBtn.disabled = false;
     compareBtn.textContent = 'Compare Routes';

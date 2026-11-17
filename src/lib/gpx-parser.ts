@@ -18,7 +18,7 @@ export function parseGpx(xml: string): GpxData {
   // Check for parse errors
   const parseError = doc.querySelector('parsererror');
   if (parseError) {
-    throw new Error('Invalid GPX XML: ' + parseError.textContent);
+    throw new Error('Invalid GPX XML: ' + parserErrorText(parseError));
   }
 
   // Parse tracks (<trk> elements with <trkseg> containing <trkpt>)
@@ -70,6 +70,19 @@ export function parseGpx(xml: string): GpxData {
   });
 
   return { tracks, routes, waypoints };
+}
+
+/**
+ * The message inside a DOMParser `<parsererror>` element.
+ *
+ * Chromium and Safari wrap the actual error in boilerplate ("This page
+ * contains the following errors: ... Below is a rendering of the page up to
+ * the first error."); the error itself is the element's `<div>`. Other
+ * engines put the message straight in the element.
+ */
+export function parserErrorText(parseError: Element): string {
+  const detail = parseError.getElementsByTagName('div')[0];
+  return ((detail ?? parseError).textContent || 'the file could not be parsed').trim();
 }
 
 /**

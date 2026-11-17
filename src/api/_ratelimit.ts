@@ -1,4 +1,5 @@
 import type { Redis } from "@upstash/redis";
+import { envPositiveInt } from "./_env";
 
 export interface RateLimitResult {
   allowed: boolean;
@@ -6,7 +7,7 @@ export interface RateLimitResult {
   resetIn: number;
 }
 
-export const RATE_LIMIT = parseInt(process.env.RATE_LIMIT_PER_MINUTE || "10");
+export const RATE_LIMIT = envPositiveInt("RATE_LIMIT_PER_MINUTE", 10);
 
 /** First hop of `x-forwarded-for` (Vercel sets it), or "unknown". */
 export function clientIp(req: Request): string {
