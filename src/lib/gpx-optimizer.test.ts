@@ -1020,3 +1020,27 @@ describe('optimizeGpx validation with truncation', () => {
     expect(result.passed).toBe(true);
   });
 });
+
+describe('optimizeGpx stats across disjoint segments', () => {
+  it('does not count the jump between segments or tracks as distance or climb', () => {
+    // Two ~111 m segments, 1 degree of latitude (~111 km) and 900 m of height apart.
+    const gpx = `<?xml version="1.0"?><gpx>
+      <trk><name>A</name>
+        <trkseg><trkpt lat="0" lon="0"><ele>100</ele></trkpt><trkpt lat="0.001" lon="0"><ele>100</ele></trkpt></trkseg>
+        <trkseg><trkpt lat="1" lon="0"><ele>1000</ele></trkpt><trkpt lat="1.001" lon="0"><ele>1000</ele></trkpt></trkseg>
+      </trk>
+      <trk><name>B</name>
+        <trkseg><trkpt lat="2" lon="0"><ele>100</ele></trkpt><trkpt lat="2.001" lon="0"><ele>100</ele></trkpt></trkseg>
+      </trk>
+    </gpx>`;
+
+    const result = optimizeGpx(gpx, 'a.gpx', { elevationSmoothing: false });
+
+    expect(result.original.pointCount).toBe(6);
+    expect(result.original.distance).toBeGreaterThan(330);
+    expect(result.original.distance).toBeLessThan(340);
+    expect(result.original.elevationGain).toBe(0);
+    expect(result.original.elevationLoss).toBe(0);
+    expect(result.optimized.distance).toBeCloseTo(result.original.distance, 0);
+  });
+});

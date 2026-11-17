@@ -1,3 +1,4 @@
+import { parserErrorText } from './gpx-parser';
 import type { GpxData, GpxPoint, GpxTrack, GpxWaypoint } from './types';
 
 /**
@@ -245,7 +246,7 @@ export function parseKml(xml: string): KmlDocument {
 
   const parseError = doc.getElementsByTagName('parsererror')[0];
   if (parseError) {
-    throw new Error('Invalid KML XML: ' + parseError.textContent);
+    throw new Error('Invalid KML XML: ' + parserErrorText(parseError));
   }
 
   const root = doc.documentElement;

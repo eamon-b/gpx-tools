@@ -26,6 +26,7 @@ import {
 import { escapeHtml } from "../shared/html-utils.js";
 import { setupUploadArea, showFileInfo } from "../shared/file-utils.js";
 import { PREFS_KEY, savePrefs } from "../shared/prefs.js";
+import { setupErrorBanner, errorText } from "../shared/error-banner.js";
 
 // DOM Elements
 const gpxUploadArea = document.getElementById("gpx-upload-area")!;
@@ -47,7 +48,7 @@ const showMoreBtn = document.getElementById(
 ) as HTMLButtonElement;
 const downloadCsvBtn = document.getElementById("download-csv")!;
 const downloadGpxBtn = document.getElementById("download-gpx")!;
-const errorArea = document.getElementById("error-area")!;
+const errorBanner = setupErrorBanner();
 
 // POI type checkboxes
 const poiWaterCheckbox = document.getElementById(
@@ -100,21 +101,10 @@ const markersByKey = new Map<string, L.CircleMarker>();
 const categoryLayers = new Map<POIType, L.LayerGroup>();
 
 // Utility functions
-// Inline error display (replaces alert())
-function showError(message: string): void {
-  errorArea.textContent = message;
-  errorArea.removeAttribute("hidden");
-}
-
-function clearError(): void {
-  errorArea.textContent = "";
-  errorArea.setAttribute("hidden", "");
-}
-
 // Setup upload area
 setupUploadArea(gpxUploadArea, gpxFileInput, gpxFileInfo, (file) => {
   gpxFile = file;
-  clearError();
+  errorBanner.hide();
   if (file) {
     showFileInfo(gpxUploadArea, gpxFileInfo, file);
     enrichBtn.disabled = false;
@@ -197,11 +187,11 @@ function setRunning(running: boolean): void {
 enrichBtn.addEventListener("click", async () => {
   if (!gpxFile) return;
 
-  clearError();
+  errorBanner.hide();
 
   const types = getSelectedTypes();
   if (types.length === 0) {
-    showError("Please select at least one POI type");
+    errorBanner.show("Please select at least one POI type");
     return;
   }
 
@@ -279,7 +269,7 @@ enrichBtn.addEventListener("click", async () => {
     if (error instanceof Error && error.name === "AbortError") {
       showCancelled();
     } else {
-      const message = error instanceof Error ? error.message : "Unknown error";
+      const message = errorText(error);
       let display = `Error: ${message}`;
       if (/failed to fetch|network|load failed/i.test(message)) {
         display =
@@ -289,7 +279,7 @@ enrichBtn.addEventListener("click", async () => {
             ' Dev hint: the API is not served by "npm run dev" — run the site with "vercel dev" to enable the serverless functions.';
         }
       }
-      showError(display);
+      errorBanner.show(display);
       progressArea.setAttribute("hidden", "");
       progressFill.classList.remove("indeterminate");
     }

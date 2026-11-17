@@ -3,6 +3,7 @@ import { saveAs } from 'file-saver';
 import { escapeHtml } from '../shared/html-utils.js';
 import { formatFileSize } from '../shared/file-utils.js';
 import { PREFS_KEY, savePrefs } from '../shared/prefs.js';
+import { setupErrorBanner, errorText } from '../shared/error-banner.js';
 
 // DOM Elements
 const gpxUploadArea = document.getElementById('gpx-upload-area')!;
@@ -30,6 +31,8 @@ interface FileEntry {
   file: File;
   content: string;
 }
+
+const errorBanner = setupErrorBanner();
 
 let fileEntries: FileEntry[] = [];
 let combineResult: CombineResult | null = null;
@@ -195,6 +198,7 @@ gpxFileInput.addEventListener('change', () => {
 clearAllBtn.addEventListener('click', () => {
   fileEntries = [];
   skipNotice.hidden = true;
+  errorBanner.hide();
   updateUI();
 });
 
@@ -204,6 +208,7 @@ processBtn.addEventListener('click', async () => {
 
   processBtn.disabled = true;
   processBtn.textContent = 'Processing...';
+  errorBanner.hide();
 
   try {
     const gpxContents = fileEntries.map(entry => entry.content);
@@ -257,7 +262,8 @@ processBtn.addEventListener('click', async () => {
     resultMeta.textContent = `${combineResult.pointCount.toLocaleString()} points, ${combineResult.waypointCount} waypoints`;
 
   } catch (error) {
-    alert(`Error combining GPX files: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    results.hidden = true;
+    errorBanner.show(`Error combining GPX files: ${errorText(error)}`);
   } finally {
     processBtn.disabled = false;
     processBtn.textContent = 'Combine GPX Files';

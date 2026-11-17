@@ -4,6 +4,7 @@ import { saveAs } from 'file-saver';
 import { setupUploadArea, showFileInfo, stripExtension } from '../shared/file-utils.js';
 import { escapeHtml } from '../shared/html-utils.js';
 import { PREFS_KEY, savePrefs } from '../shared/prefs.js';
+import { setupErrorBanner, errorText } from '../shared/error-banner.js';
 
 // DOM Elements
 const gpxUploadArea = document.getElementById('gpx-upload-area')!;
@@ -16,9 +17,6 @@ const gpxFileList = document.getElementById('gpx-file-list')!;
 const gpxDownloadAll = document.getElementById('gpx-download-all')!;
 const maxPointsInput = document.getElementById('max-points') as HTMLInputElement;
 const waypointDistanceInput = document.getElementById('waypoint-distance') as HTMLInputElement;
-const gpxError = document.getElementById('gpx-error')!;
-const gpxErrorMessage = document.getElementById('gpx-error-message')!;
-const gpxErrorDismiss = document.getElementById('gpx-error-dismiss')!;
 
 // State
 let gpxFile: File | null = null;
@@ -30,22 +28,12 @@ function downloadFile(filename: string, content: string, mimeType: string): void
   saveAs(blob, filename);
 }
 
-// Inline error handling
-function showError(message: string): void {
-  gpxErrorMessage.textContent = message;
-  gpxError.removeAttribute('hidden');
-}
-
-function hideError(): void {
-  gpxError.setAttribute('hidden', '');
-}
-
-gpxErrorDismiss.addEventListener('click', hideError);
+const errorBanner = setupErrorBanner();
 
 // GPX handling
 setupUploadArea(gpxUploadArea, gpxFileInput, gpxFileInfo, (file) => {
   gpxFile = file;
-  hideError();
+  errorBanner.hide();
   if (file) {
     showFileInfo(gpxUploadArea, gpxFileInfo, file);
     gpxProcessBtn.disabled = false;
@@ -61,7 +49,7 @@ gpxProcessBtn.addEventListener('click', async () => {
 
   gpxProcessBtn.disabled = true;
   gpxProcessBtn.textContent = 'Processing...';
-  hideError();
+  errorBanner.hide();
 
   try {
     const content = await gpxFile.text();
@@ -74,7 +62,7 @@ gpxProcessBtn.addEventListener('click', async () => {
 
     if (gpxSplitResults.length === 0) {
       gpxResults.setAttribute('hidden', '');
-      showError('No track or route points were found in this file, so no output files were created. Check that the GPX contains a <trk> or <rte> with points.');
+      errorBanner.show('No track or route points were found in this file, so no output files were created. Check that the GPX contains a <trk> or <rte> with points.');
       return;
     }
 
@@ -111,7 +99,7 @@ gpxProcessBtn.addEventListener('click', async () => {
 
   } catch (error) {
     gpxResults.setAttribute('hidden', '');
-    showError(`Error processing GPX: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    errorBanner.show(`Error processing GPX: ${errorText(error)}`);
   } finally {
     gpxProcessBtn.disabled = false;
     gpxProcessBtn.textContent = 'Split GPX';

@@ -42,9 +42,13 @@ export interface DaylightPlanDay {
   sunrise: Date;
   sunset: Date;
   daylightHours: number;
+  /** Hours between the planned start and stop, less the buffer. Never negative. */
   hikingHoursAvailable: number;
+  /** The day's distance does not fit in `hikingHoursAvailable`. */
   nightHikingRequired: boolean;
+  /** The planned start is before sunrise (a negative `startTimeOffset`). */
   startBeforeSunrise: boolean;
+  /** Walking the day's distance from the planned start runs past sunset. */
   endAfterSunset: boolean;
   /** Distance covered this day in km */
   distanceKm: number;
@@ -63,9 +67,15 @@ export interface DaylightPlanOptions {
   startDate: Date | string;
   dailyTargetKm: number;
   hikingSpeedKmh?: number;
+  /**
+   * Minutes of each day held in reserve - breaks, navigation, a slow climb -
+   * and so taken out of the hiking time available. Default 0.
+   */
   bufferMinutes?: number;
-  startTimeOffset?: number; // minutes after sunrise to start
-  endTimeOffset?: number;   // minutes before sunset to end
+  /** Minutes after sunrise to start. Negative starts before sunrise. Default 30. */
+  startTimeOffset?: number;
+  /** Minutes before sunset to stop. Negative walks on past sunset. Default 30. */
+  endTimeOffset?: number;
 }
 
 export interface DaylightPlan {
@@ -149,8 +159,16 @@ export function getDaylightInfo(lat: number, lon: number, date: Date): DaylightI
   };
 }
 
+const DAY_MS = 86400000;
+
 /**
- * Get daylight information for multiple dates at a location
+ * Get daylight information for multiple dates at a location.
+ *
+ * Days are exact 24 h steps from `startDate`. (Stepping with `setDate` moves
+ * in the machine's own time zone, so across its daylight-saving change the
+ * instants drift an hour from the caller's anchor - and differ between a
+ * laptop and a server.) Anchor `startDate` at local noon of the place asked
+ * about to stay clear of midnight.
  */
 export function getDaylightRange(
   lat: number,
@@ -161,47 +179,54 @@ export function getDaylightRange(
   const results: DaylightInfo[] = [];
 
   for (let i = 0; i < numDays; i++) {
-    const date = new Date(startDate);
-    date.setDate(date.getDate() + i);
-    results.push(getDaylightInfo(lat, lon, date));
+    results.push(getDaylightInfo(lat, lon, new Date(startDate.getTime() + i * DAY_MS)));
   }
 
   return results;
 }
 
 /**
- * Calculate daylight along a route for a given date range
+ * Daylight at evenly spaced places along a route, for each day of a date
+ * range: `result[day][sample]`.
+ *
+ * Samples are spaced by DISTANCE along the route (interpolating between
+ * points), `samplesPerDay * numDays` of them, and always include both ends.
+ * Spacing by point index would bunch the samples wherever the recording is
+ * dense - switchbacks, a long lunch - and skip the fast open stretches.
+ * `distanceFromStart` is in km. Days are exact 24 h steps from `startDate`,
+ * as in `getDaylightRange`.
  */
 export function getDaylightAlongRoute(
-  routePoints: { lat: number; lon: number; dist?: number }[],
+  routePoints: { lat: number; lon: number }[],
   startDate: Date,
   numDays: number,
   samplesPerDay: number = 10
 ): LocationDaylight[][] {
+  if (routePoints.length === 0 || !(numDays > 0)) {
+    return [];
+  }
+
+  const pointsWithDist = calculateCumulativeDistances(routePoints);
+  const totalDist = pointsWithDist[pointsWithDist.length - 1].dist;
+  // A route with no length is one place; otherwise at least the two ends.
+  const sampleCount =
+    totalDist > 0 ? Math.max(2, Math.floor(numDays) * Math.max(1, Math.floor(samplesPerDay))) : 1;
+  const samples = Array.from({ length: sampleCount }, (_, k) => {
+    const dist = sampleCount > 1 ? (totalDist * k) / (sampleCount - 1) : 0;
+    return { ...findPointAtDistance(pointsWithDist, dist), dist };
+  });
+
   const results: LocationDaylight[][] = [];
-  const totalPoints = routePoints.length;
-  const sampleStep = Math.max(1, Math.floor(totalPoints / (numDays * samplesPerDay)));
-
   for (let day = 0; day < numDays; day++) {
-    const date = new Date(startDate);
-    date.setDate(date.getDate() + day);
-
-    const dayResults: LocationDaylight[] = [];
-
-    // Sample points along the route
-    for (let i = 0; i < totalPoints; i += sampleStep) {
-      const point = routePoints[i];
-      const info = getDaylightInfo(point.lat, point.lon, date);
-
-      dayResults.push({
-        ...info,
-        lat: point.lat,
-        lon: point.lon,
-        distanceFromStart: point.dist,
-      });
-    }
-
-    results.push(dayResults);
+    const date = new Date(startDate.getTime() + day * DAY_MS);
+    results.push(
+      samples.map(sample => ({
+        ...getDaylightInfo(sample.lat, sample.lon, date),
+        lat: sample.lat,
+        lon: sample.lon,
+        distanceFromStart: sample.dist,
+      }))
+    );
   }
 
   return results;
@@ -269,6 +294,7 @@ export function createDaylightPlan(
     startTimeOffset = 30,
     endTimeOffset = 30,
   } = options;
+  const bufferMinutes = Math.max(0, options.bufferMinutes ?? 0);
 
   if (routePoints.length === 0) {
     throw new Error('Route has no points');
@@ -315,7 +341,7 @@ export function createDaylightPlan(
 
   for (let dayNum = 0; dayNum < estimatedDays && currentDist < totalDistance; dayNum++) {
     // Walk days as exact 24h steps from the route-local-noon anchor
-    const date = new Date(startNoon.getTime() + dayNum * 86400000);
+    const date = new Date(startNoon.getTime() + dayNum * DAY_MS);
 
     const startLocation = findPointAtDistance(pointsWithDist, currentDist);
     const endDist = Math.min(currentDist + dailyTargetKm, totalDistance);
@@ -328,20 +354,30 @@ export function createDaylightPlan(
     const distanceToday = endDist - currentDist;
     const hikingHoursNeeded = distanceToday / hikingSpeedKmh;
 
-    // Calculate available daylight hours (with offsets). On polar days/nights
-    // sunrise/sunset are Invalid Dates, so fall back to 24h / 0h.
+    // Calculate available hiking hours: from the planned start to the
+    // planned stop, less the buffer. On polar days/nights sunrise/sunset are
+    // Invalid Dates, so fall back to 24h / 0h.
+    const bufferHours = bufferMinutes / 60;
     let hikingHoursAvailable: number;
+    let startBeforeSunrise: boolean;
+    let endAfterSunset: boolean;
     if (daylight.polarDay) {
-      hikingHoursAvailable = 24;
+      hikingHoursAvailable = Math.max(0, 24 - bufferHours);
+      startBeforeSunrise = false;
+      endAfterSunset = false;
     } else if (daylight.polarNight) {
       hikingHoursAvailable = 0;
+      // No sunrise to wait for: any walking at all is in the dark.
+      startBeforeSunrise = distanceToday > 0;
+      endAfterSunset = distanceToday > 0;
     } else {
-      const availableMs = (
-        daylight.sunset.getTime() - endTimeOffset * 60000 -
-        (daylight.sunrise.getTime() + startTimeOffset * 60000)
-      );
+      const startMs = daylight.sunrise.getTime() + startTimeOffset * 60000;
+      const stopMs = daylight.sunset.getTime() - endTimeOffset * 60000;
       // Offsets longer than the day itself leave nothing, not negative hours.
-      hikingHoursAvailable = Math.max(0, availableMs / (1000 * 60 * 60));
+      hikingHoursAvailable = Math.max(0, (stopMs - startMs) / 3600000 - bufferHours);
+      startBeforeSunrise = startTimeOffset < 0;
+      const finishMs = startMs + (hikingHoursNeeded + bufferHours) * 3600000;
+      endAfterSunset = finishMs > daylight.sunset.getTime();
     }
 
     const nightHikingRequired = hikingHoursNeeded > hikingHoursAvailable;
@@ -367,8 +403,8 @@ export function createDaylightPlan(
       daylightHours: daylight.daylightHours,
       hikingHoursAvailable,
       nightHikingRequired,
-      startBeforeSunrise: false, // Could be calculated based on schedule
-      endAfterSunset: nightHikingRequired,
+      startBeforeSunrise,
+      endAfterSunset,
       distanceKm: distanceToday,
       polarDay: daylight.polarDay,
       polarNight: daylight.polarNight,

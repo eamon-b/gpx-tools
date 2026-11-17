@@ -27,7 +27,7 @@ export type {
 } from "./types";
 
 // GPX Parser
-export { parseGpx, generateGpx, writeGpx } from "./gpx-parser";
+export { parseGpx, generateGpx, writeGpx, waypointChildElements } from "./gpx-parser";
 export type { GpxMetadata } from "./gpx-parser";
 
 // KML / KMZ Parser
@@ -51,7 +51,9 @@ export type {
 export {
   EARTH_RADIUS_METERS,
   haversineDistance,
+  haversineDistance2D,
   haversineDistance3D,
+  pointToPointDistance,
   waypointToPointDistance,
   isWaypointNearPoints,
   findCloseWaypoints,
@@ -70,6 +72,9 @@ export {
   DEFAULT_RESUPPLY_KEYWORDS,
 } from "./csv-processor";
 
+// CSV output safety
+export { csvSafeCell, csvSafeRows } from "./csv-safe";
+
 // GPX Datasheet Processor
 export {
   processGpxTravelPlan,
@@ -78,6 +83,7 @@ export {
   GPX_DATASHEET_DEFAULTS,
   GPX_DEFAULT_RESUPPLY_KEYWORDS,
 } from "./gpx-datasheet";
+export type { GpxProcessResult } from "./gpx-datasheet";
 
 // GPX Optimizer
 export {
@@ -89,9 +95,51 @@ export {
   calculateTrackDistance,
   calculateElevationStats,
   truncateTrack,
+  truncateTracks,
   roundCoordinates,
+  generateOptimizedGpx,
+  buildNearestPointIndex,
   GPX_OPTIMIZER_DEFAULTS,
 } from "./gpx-optimizer";
+
+// Route comparison
+export {
+  compareRoutes,
+  calculateRouteStats,
+  formatComparisonSummary,
+  exportComparisonToCSV,
+  mergeRoutes,
+} from "./route-comparison";
+export type {
+  RoutePoint,
+  RouteStats,
+  RouteSegment,
+  RouteComparison,
+  ComparisonOptions,
+} from "./route-comparison";
+
+// Daylight
+export {
+  createDaylightPlan,
+  getDaylightInfo,
+  getDaylightRange,
+  getDaylightAlongRoute,
+  getMoonInfo,
+  exportDaylightPlanToCSV,
+  estimateUtcOffset,
+  shiftToUtcOffset,
+  formatUtcOffset,
+  formatDateISO,
+  formatTime,
+  formatDaylightHours,
+} from "./daylight";
+export type {
+  DaylightInfo,
+  LocationDaylight,
+  DaylightPlanDay,
+  DaylightPlanOptions,
+  DaylightPlan,
+} from "./daylight";
 
 // OSM POI catalog, Overpass query building and route geometry
 export {
@@ -107,6 +155,10 @@ export {
   poiKey,
   normalizeOverpassElements,
   buildCorridorChunks,
+  packCorridorChunks,
+  corridorVertexCount,
+  overpassPayloadError,
+  isTransientOverpassError,
   validateOverpassArea,
   parseOverpassArea,
   buildRouteGeometry,

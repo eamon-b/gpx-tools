@@ -168,3 +168,111 @@ describe('compareRoutes with a zero-length route', () => {
     expect(comparison.sharedPercentage).toBe(0);
   });
 });
+
+describe('compareRoutes measures to the line, not the vertices', () => {
+  // Same 11 km straight line: one with a point every ~1.1 km, one every ~11 m.
+  const sparse = Array.from({ length: 11 }, (_, i) => ({ lat: 0, lon: i * 0.01 }));
+  const dense = Array.from({ length: 1001 }, (_, i) => ({ lat: 0, lon: i * 0.0001 }));
+
+  it('treats a sparse and a dense recording of one route as fully shared', () => {
+    const comparison = compareRoutes(sparse, dense);
+    expect(comparison.sharedPercentage).toBeGreaterThan(99.9);
+    expect(comparison.route1OnlySegments).toHaveLength(0);
+    expect(comparison.route2OnlySegments).toHaveLength(0);
+  });
+
+  it('gives the same answer whichever file is route 1', () => {
+    const comparison = compareRoutes(dense, sparse);
+    expect(comparison.sharedPercentage).toBeGreaterThan(99.9);
+    expect(comparison.route1OnlySegments).toHaveLength(0);
+    expect(comparison.route2OnlySegments).toHaveLength(0);
+  });
+
+  it('matches a sparse route offset beside the line only within the threshold', () => {
+    const offset = (meters: number) => sparse.map(p => ({ lat: meters / 111195, lon: p.lon }));
+    expect(compareRoutes(offset(60), dense).sharedPercentage).toBeGreaterThan(99.9);
+    expect(compareRoutes(offset(140), dense).sharedPercentage).toBe(0);
+  });
+
+  it('handles single-point and empty routes', () => {
+    expect(compareRoutes([{ lat: 0, lon: 0.05 }], dense).route2OnlySegments.length).toBeGreaterThan(0);
+    expect(compareRoutes([], dense).sharedSegments).toHaveLength(0);
+    expect(compareRoutes(dense, []).sharedPercentage).toBe(0);
+  });
+
+  it('works across the antimeridian', () => {
+    const a = Array.from({ length: 200 }, (_, i) => ({ lat: -17, lon: 179.9 + i * 0.001 }))
+      .map(p => ({ lat: p.lat, lon: p.lon > 180 ? p.lon - 360 : p.lon }));
+    const b = a.map(p => ({ lat: p.lat + 0.0002, lon: p.lon }));
+    expect(compareRoutes(a, b).sharedPercentage).toBeGreaterThan(99.9);
+  });
+});
+
+describe('compareRoutes against a brute-force reference', () => {
+  // Deterministic pseudo-random wiggly routes that cross and run alongside each other.
+  function lcg(seed: number) {
+    let s = seed;
+    return () => (s = (s * 1664525 + 1013904223) % 4294967296) / 4294967296;
+  }
+  function wander(seed: number, n: number, lat0: number, lon0: number) {
+    const rnd = lcg(seed);
+    const pts = [{ lat: lat0, lon: lon0 }];
+    for (let i = 1; i < n; i++) {
+      const step = rnd() < 0.05 ? 0.004 : 0.0004; // the odd long leg
+      pts.push({
+        lat: pts[i - 1].lat + (rnd() - 0.5) * step,
+        lon: pts[i - 1].lon + rnd() * step,
+      });
+    }
+    return pts;
+  }
+  // Point-to-segment distance in metres, every segment, no index.
+  function bruteDistance(p: { lat: number; lon: number }, line: { lat: number; lon: number }[]) {
+    const M = (Math.PI / 180) * 6371000;
+    const c = Math.cos((p.lat * Math.PI) / 180);
+    let best = Infinity;
+    for (let i = 0; i + 1 < line.length; i++) {
+      const ax = (line[i].lon - p.lon) * c * M;
+      const ay = (line[i].lat - p.lat) * M;
+      const dx = (line[i + 1].lon - line[i].lon) * c * M;
+      const dy = (line[i + 1].lat - line[i].lat) * M;
+      const len = dx * dx + dy * dy;
+      const t = len > 0 ? Math.min(1, Math.max(0, -(ax * dx + ay * dy) / len)) : 0;
+      best = Math.min(best, Math.hypot(ax + t * dx, ay + t * dy));
+    }
+    return best;
+  }
+
+  it.each([[55, 0.1], [61, 0.03], [68, 0.5]])('lat %i, threshold %f km', (lat, threshold) => {
+    const route1 = wander(1, 600, lat, 10);
+    const route2 = wander(2, 900, lat + 0.0003, 10);
+    // minSegmentLength 0 so every run of shared points is reported.
+    const comparison = compareRoutes(route1, route2, {
+      proximityThreshold: threshold,
+      minSegmentLength: 0,
+    });
+
+    const sharedFromSegments = new Array(route1.length).fill(false);
+    for (const seg of comparison.sharedSegments) {
+      for (let i = seg.startIndex; i <= seg.endIndex; i++) sharedFromSegments[i] = true;
+    }
+    const expected = route1.map(p => bruteDistance(p, route2) <= threshold * 1000);
+    expect(sharedFromSegments).toEqual(expected);
+  });
+});
+
+describe('compareRoutes performance', () => {
+  it('compares two 50k-point routes that never meet without scanning one per point', () => {
+    const route1 = Array.from({ length: 50000 }, (_, i) => ({ lat: 40, lon: i * 0.0001 }));
+    const route2 = Array.from({ length: 50000 }, (_, i) => ({ lat: 40.05, lon: i * 0.0001 }));
+
+    const started = Date.now();
+    const comparison = compareRoutes(route1, route2);
+    const elapsed = Date.now() - started;
+
+    expect(comparison.sharedPercentage).toBe(0);
+    // The old windowed search fell back to a full scan every sixth point here
+    // (hundreds of millions of haversines, tens of seconds).
+    expect(elapsed).toBeLessThan(3000);
+  });
+});

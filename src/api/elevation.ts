@@ -1,4 +1,5 @@
 import { getCorsHeaders } from './_cors';
+import { envPositiveInt } from './_env';
 import { logError, logWarn } from './_logger';
 import { checkRateLimit, clientIp, type RateLimitResult } from './_ratelimit';
 import { createRedisClient } from './_redis';
@@ -26,7 +27,7 @@ const CACHE_TTL = 86400 * 365; // 1 year (elevation doesn't change)
 // ten upstream calls, so without a limit this endpoint is a free open-elevation
 // proxy billed to us. Higher than the Overpass default because the client sends
 // a long route as several 200-point batches.
-const RATE_LIMIT = parseInt(process.env.ELEVATION_RATE_LIMIT_PER_MINUTE || '30');
+const RATE_LIMIT = envPositiveInt('ELEVATION_RATE_LIMIT_PER_MINUTE', 30);
 
 // Circuit breaker state keys
 const CIRCUIT_BREAKER_KEY = 'circuit:elevation';
@@ -63,18 +64,18 @@ async function recordSuccess(): Promise<void> {
   await redis.del(CIRCUIT_BREAKER_KEY);
 }
 
+/**
+ * Count an upstream failure. Returns true when the circuit is (now) open.
+ *
+ * This also covers the half-open probe: a probe that fails pushes
+ * `lastFailure` forward, so the circuit stays open for another full timeout
+ * instead of letting every request through to a service that is still down.
+ */
 async function recordFailure(): Promise<boolean> {
   const state = await getCircuitState();
-  const now = Math.floor(Date.now() / 1000);
-
-  // If circuit was open and timeout has passed, this is a test request
-  if (state.isOpen && (now - state.lastFailure) > CIRCUIT_RESET_TIMEOUT) {
-    // Allow this request through (half-open state)
-    return false;
-  }
 
   state.failures++;
-  state.lastFailure = now;
+  state.lastFailure = Math.floor(Date.now() / 1000);
   state.isOpen = state.failures >= CIRCUIT_FAILURE_THRESHOLD;
 
   await redis.set(CIRCUIT_BREAKER_KEY, state, { ex: CIRCUIT_RESET_TIMEOUT * 2 });
@@ -82,6 +83,16 @@ async function recordFailure(): Promise<boolean> {
   return state.isOpen;
 }
 
+/**
+ * May this request call the upstream API?
+ *
+ * Closed: yes. Open: no, until the reset timeout has passed. After that the
+ * circuit is half-open and exactly one request is let through as a probe:
+ * admitting it restarts the timeout, so concurrent and following requests keep
+ * being refused until the probe reports back - success closes the circuit
+ * (`recordSuccess`), failure re-opens it (`recordFailure`), and a probe that
+ * dies without reporting simply lets the next one through a timeout later.
+ */
 async function isCircuitOpen(): Promise<{ open: boolean; resetIn?: number }> {
   const state = await getCircuitState();
   const now = Math.floor(Date.now() / 1000);
@@ -91,12 +102,17 @@ async function isCircuitOpen(): Promise<{ open: boolean; resetIn?: number }> {
   }
 
   const timeSinceFailure = now - state.lastFailure;
-  if (timeSinceFailure > CIRCUIT_RESET_TIMEOUT) {
-    // Circuit is in half-open state, allow one request through
-    return { open: false };
+  if (timeSinceFailure <= CIRCUIT_RESET_TIMEOUT) {
+    return { open: true, resetIn: Math.max(1, CIRCUIT_RESET_TIMEOUT - timeSinceFailure) };
   }
 
-  return { open: true, resetIn: CIRCUIT_RESET_TIMEOUT - timeSinceFailure };
+  // Half-open: claim the probe.
+  await redis.set(
+    CIRCUIT_BREAKER_KEY,
+    { ...state, lastFailure: now },
+    { ex: CIRCUIT_RESET_TIMEOUT * 2 }
+  );
+  return { open: false };
 }
 
 // Keys use the shared ~11 m grid (4 decimal places), so nearby points - and
@@ -171,26 +187,6 @@ export default async function handler(req: Request): Promise<Response> {
   }
 
   try {
-    // Fail open: a Redis outage must not lock everyone out.
-    let rateLimit: RateLimitResult | null = null;
-    try {
-      rateLimit = await checkRateLimit(redis, `ratelimit:elevation:${clientIp(req)}`, RATE_LIMIT);
-    } catch (error) {
-      logError('elevation:ratelimit', error);
-    }
-    if (rateLimit && !rateLimit.allowed) {
-      return new Response(JSON.stringify({ error: 'Rate limit exceeded', resetIn: rateLimit.resetIn }), {
-        status: 429,
-        headers: {
-          ...corsHeaders,
-          'Content-Type': 'application/json',
-          'X-RateLimit-Remaining': '0',
-          'X-RateLimit-Reset': String(rateLimit.resetIn),
-          'Retry-After': String(rateLimit.resetIn),
-        },
-      });
-    }
-
     let body: ElevationRequest;
     try {
       body = await req.json();
@@ -231,23 +227,6 @@ export default async function handler(req: Request): Promise<Response> {
       }
     }
 
-    // Check circuit breaker before making external requests
-    const circuit = await bestEffort('elevation:circuit', isCircuitOpen, { open: false });
-    if (circuit.open) {
-      return new Response(JSON.stringify({
-        error: 'Elevation service temporarily unavailable',
-        resetIn: circuit.resetIn,
-        hint: 'The external elevation API is experiencing issues. Try again later.',
-      }), {
-        status: 503,
-        headers: {
-          ...corsHeaders,
-          'Content-Type': 'application/json',
-          'Retry-After': String(circuit.resetIn || 60),
-        },
-      });
-    }
-
     const results: ElevationResult[] = [];
     const uncached: { index: number; lat: number; lon: number }[] = [];
 
@@ -265,6 +244,49 @@ export default async function handler(req: Request): Promise<Response> {
         results[i] = { lat: loc.lat, lon: loc.lon, elevation: cached };
       } else {
         uncached.push({ index: i, lat: loc.lat, lon: loc.lon });
+      }
+    }
+
+    // The rate limit and the circuit breaker both guard the upstream API, so
+    // they apply only when there is something to ask it. A request answered
+    // entirely from the cache costs neither quota nor an upstream call, and
+    // is served even while the upstream is down.
+    if (uncached.length > 0) {
+      // Rate limit, failing open: a Redis outage must not lock everyone out.
+      let rateLimit: RateLimitResult | null = null;
+      try {
+        rateLimit = await checkRateLimit(redis, `ratelimit:elevation:${clientIp(req)}`, RATE_LIMIT);
+      } catch (error) {
+        logError('elevation:ratelimit', error);
+      }
+      if (rateLimit && !rateLimit.allowed) {
+        return new Response(JSON.stringify({ error: 'Rate limit exceeded', resetIn: rateLimit.resetIn }), {
+          status: 429,
+          headers: {
+            ...corsHeaders,
+            'Content-Type': 'application/json',
+            'X-RateLimit-Remaining': '0',
+            'X-RateLimit-Reset': String(rateLimit.resetIn),
+            'Retry-After': String(rateLimit.resetIn),
+          },
+        });
+      }
+
+      // Check the circuit breaker before making external requests
+      const circuit = await bestEffort('elevation:circuit', isCircuitOpen, { open: false });
+      if (circuit.open) {
+        return new Response(JSON.stringify({
+          error: 'Elevation service temporarily unavailable',
+          resetIn: circuit.resetIn,
+          hint: 'The external elevation API is experiencing issues. Try again later.',
+        }), {
+          status: 503,
+          headers: {
+            ...corsHeaders,
+            'Content-Type': 'application/json',
+            'Retry-After': String(circuit.resetIn || 60),
+          },
+        });
       }
     }
 
@@ -310,6 +332,15 @@ export default async function handler(req: Request): Promise<Response> {
         // Fill failed points with null
         for (const point of batch) {
           results[point.index] = { lat: point.lat, lon: point.lon, elevation: null };
+        }
+
+        // Once the circuit is open, stop: the remaining batches of this
+        // request would only queue more calls onto a service that is down.
+        if (circuitOpened) {
+          for (const point of uncached.slice(i + MAX_POINTS_PER_REQUEST)) {
+            results[point.index] = { lat: point.lat, lon: point.lon, elevation: null };
+          }
+          break;
         }
       }
 

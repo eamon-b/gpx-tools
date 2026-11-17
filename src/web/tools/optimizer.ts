@@ -4,6 +4,7 @@ import { saveAs } from 'file-saver';
 import { escapeHtml } from '../shared/html-utils.js';
 import { formatFileSize } from '../shared/file-utils.js';
 import { PREFS_KEY, savePrefs } from '../shared/prefs.js';
+import { setupErrorBanner, errorText } from '../shared/error-banner.js';
 
 // DOM Elements
 const gpxUploadArea = document.getElementById('gpx-upload-area')!;
@@ -17,7 +18,7 @@ const stats = document.getElementById('stats')!;
 const warnings = document.getElementById('warnings')!;
 const resultFileList = document.getElementById('result-file-list')!;
 const downloadAllBtn = document.getElementById('download-all-btn')!;
-const errorMessage = document.getElementById('error-message')!;
+const errorBanner = setupErrorBanner();
 
 // Options
 const simplificationToleranceInput = document.getElementById('simplification-tolerance') as HTMLInputElement;
@@ -138,8 +139,7 @@ processBtn.addEventListener('click', async () => {
 
   processBtn.disabled = true;
   processBtn.textContent = 'Processing...';
-  errorMessage.hidden = true;
-  errorMessage.textContent = '';
+  errorBanner.hide();
 
   try {
     const options: Partial<OptimizationOptions> = {
@@ -169,7 +169,7 @@ processBtn.addEventListener('click', async () => {
           fileWarnings.set(entry.file.name, result.warnings);
         }
       } catch (error) {
-        fileWarnings.set(entry.file.name, [error instanceof Error ? error.message : 'Unknown error']);
+        fileWarnings.set(entry.file.name, [errorText(error)]);
       }
     }
 
@@ -240,8 +240,7 @@ processBtn.addEventListener('click', async () => {
 
   } catch (error) {
     results.hidden = true;
-    errorMessage.textContent = `Error optimizing GPX files: ${error instanceof Error ? error.message : 'Unknown error'}`;
-    errorMessage.hidden = false;
+    errorBanner.show(`Error optimizing GPX files: ${errorText(error)}`);
   } finally {
     processBtn.disabled = false;
     processBtn.textContent = 'Optimize GPX Files';

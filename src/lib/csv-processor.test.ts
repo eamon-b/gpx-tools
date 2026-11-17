@@ -281,3 +281,26 @@ total,,,,,,,,,,`;
     expect(result.stats.totalDescent).toBe(50);
   });
 });
+
+describe('resupply legs', () => {
+  it('reports ascent and descent since the previous resupply, like distance', () => {
+    const csv = [
+      'Travel Plan,,,,,,,,,,',
+      'Location,Point,Coordinates,Elevation,Ascent,Descent,Distance,Bearing,Time,Total Time,Notes',
+      'Start,1,,100m,0m,0m,0km,,,,',
+      'Ridge,2,,400m,+300m,-0m,5km,,,,',
+      'Town A,3,,200m,+50m,-250m,5km,,,,IGA',
+      'Saddle,4,,500m,+320m,-20m,4km,,,,',
+      'Town B,5,,150m,+10m,-360m,6km,,,,market',
+    ].join('\n');
+
+    const { resupplyPoints } = processTravelPlan(csv, { includeEndAsResupply: false });
+    const rows = resupplyPoints.split('\n').slice(1).map(line => JSON.parse(`[${line}]`));
+
+    // Location, Notes, Total Distance, Distance, Ascent, Descent, Total Ascent, Total Descent
+    expect(rows).toEqual([
+      ['Town A', 'IGA', '10', '10', '350', '250', '350', '250'],
+      ['Town B', 'market', '20', '10', '330', '380', '680', '630'],
+    ]);
+  });
+});

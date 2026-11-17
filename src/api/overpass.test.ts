@@ -238,6 +238,21 @@ describe("overpass handler: caching", () => {
     expect(fn).not.toHaveBeenCalled();
   });
 
+  it("does not charge a cache hit to the rate limit", async () => {
+    fetchMock(overpassOk());
+    redisMock.get.mockResolvedValue('{"elements":[]}');
+    // Already far over the limit: a hit is still served, and not counted.
+    redisMock.incr.mockResolvedValue(999);
+
+    const res = await handler(
+      post({ corridor: CORRIDOR, radiusMeters: 2000, types: ["water"] })
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("X-Cache")).toBe("HIT");
+    expect(redisMock.incr).not.toHaveBeenCalled();
+  });
+
   it("stores a miss with the configured TTL", async () => {
     fetchMock(overpassOk({ elements: [] }));
 

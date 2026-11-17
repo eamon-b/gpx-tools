@@ -127,6 +127,85 @@ describe('elevation handler', () => {
     expect((await res.json()).results).toEqual([{ lat: 1, lon: 2, elevation: 100 }]);
   });
 
+  it('serves a fully cached request without touching the rate limit or the circuit', async () => {
+    redisMock.mget.mockResolvedValue([111]);
+    redisMock.incr.mockResolvedValue(999); // would be over the limit
+    redisMock.get.mockResolvedValue({ failures: 9, lastFailure: Math.floor(Date.now() / 1000), isOpen: true });
+    const fn = upstream([]);
+
+    const res = await handler(post({ locations: [{ lat: 1, lon: 1 }] }));
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).results).toEqual([{ lat: 1, lon: 1, elevation: 111 }]);
+    expect(redisMock.incr).not.toHaveBeenCalled();
+    expect(fn).not.toHaveBeenCalled();
+  });
+
+  describe('circuit breaker', () => {
+    const now = () => Math.floor(Date.now() / 1000);
+    const failing = () => {
+      const fn = vi.fn(async () => new Response('nope', { status: 500 }));
+      vi.stubGlobal('fetch', fn);
+      return fn;
+    };
+
+    it('refuses with a 503 while open', async () => {
+      redisMock.get.mockResolvedValue({ failures: 5, lastFailure: now() - 10, isOpen: true });
+      const fn = upstream([]);
+
+      const res = await handler(post({ locations: [{ lat: 1, lon: 2 }] }));
+
+      expect(res.status).toBe(503);
+      expect(Number(res.headers.get('Retry-After'))).toBeGreaterThan(0);
+      expect(fn).not.toHaveBeenCalled();
+    });
+
+    it('lets one probe through after the timeout and claims it', async () => {
+      redisMock.get.mockResolvedValue({ failures: 5, lastFailure: now() - 61, isOpen: true });
+      const fn = upstream([{ latitude: 1, longitude: 2, elevation: 100 }]);
+
+      const res = await handler(post({ locations: [{ lat: 1, lon: 2 }] }));
+
+      expect(res.status).toBe(200);
+      expect(fn).toHaveBeenCalledTimes(1);
+      // Claimed: the stored state is pushed forward so other requests stay refused...
+      const claim = redisMock.set.mock.calls.find(([key]) => key === 'circuit:elevation');
+      expect(claim?.[1]).toMatchObject({ isOpen: true });
+      expect(claim?.[1].lastFailure).toBeGreaterThanOrEqual(now() - 1);
+      // ...and the successful probe closes the circuit.
+      expect(redisMock.del).toHaveBeenCalledWith('circuit:elevation');
+    });
+
+    it('re-opens when the probe fails', async () => {
+      redisMock.get.mockResolvedValue({ failures: 5, lastFailure: now() - 61, isOpen: true });
+      failing();
+
+      const res = await handler(post({ locations: [{ lat: 1, lon: 2 }] }));
+
+      expect(res.status).toBe(200);
+      expect((await res.json()).results).toEqual([{ lat: 1, lon: 2, elevation: null }]);
+      const writes = redisMock.set.mock.calls.filter(([key]) => key === 'circuit:elevation');
+      const last = writes[writes.length - 1][1];
+      expect(last.isOpen).toBe(true);
+      expect(last.failures).toBe(6);
+      expect(last.lastFailure).toBeGreaterThanOrEqual(now() - 1);
+      expect(redisMock.del).not.toHaveBeenCalled();
+    });
+
+    it('stops calling upstream for the rest of a request once it opens', async () => {
+      redisMock.get.mockResolvedValue({ failures: 4, lastFailure: now() - 5, isOpen: false });
+      const fn = failing();
+      const locations = Array.from({ length: 250 }, (_, i) => ({ lat: i / 100, lon: 0 }));
+
+      const res = await handler(post({ locations }));
+      const { results } = await res.json();
+
+      expect(fn).toHaveBeenCalledTimes(1); // not once per 100-point batch
+      expect(results).toHaveLength(250);
+      expect(results.every((r: { elevation: number | null }) => r.elevation === null)).toBe(true);
+    });
+  });
+
   it('rejects a malformed location with a 400, not a 500', async () => {
     const res = await handler(post({ locations: [null] }));
     expect(res.status).toBe(400);

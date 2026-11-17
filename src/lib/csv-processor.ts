@@ -186,9 +186,13 @@ export function processTravelPlan(
     );
   }
 
-  // Create resupply points
+  // Create resupply points. Distance, ascent and descent are all for the leg
+  // since the previous resupply (or the start), matching the GPX datasheet:
+  // a hiker reads the row as "what it takes to get here from the last shop".
   const resupplyRows: ResupplyRow[] = [];
   let prevTotalDistance = 0;
+  let prevTotalAscent = 0;
+  let prevTotalDescent = 0;
 
   for (const row of processedRows) {
     const isResupply = hasResupplyKeyword(row.notes, opts.resupplyKeywords);
@@ -196,15 +200,19 @@ export function processTravelPlan(
 
     if (isResupply || isEnd) {
       const segmentDistance = row.totalDistance - prevTotalDistance;
+      const segmentAscent = row.totalAscent - prevTotalAscent;
+      const segmentDescent = row.totalDescent - prevTotalDescent;
       prevTotalDistance = row.totalDistance;
+      prevTotalAscent = row.totalAscent;
+      prevTotalDescent = row.totalDescent;
 
       resupplyRows.push({
         location: row.location,
         notes: row.notes,
         totalDistance: row.totalDistance,
         distance: Math.round(segmentDistance * 1000) / 1000,
-        ascent: row.ascent,
-        descent: row.descent,
+        ascent: Math.round(segmentAscent * 10) / 10,
+        descent: Math.round(segmentDescent * 10) / 10,
         totalAscent: row.totalAscent,
         totalDescent: row.totalDescent,
       });

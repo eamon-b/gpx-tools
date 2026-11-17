@@ -1,5 +1,6 @@
 import { createHash } from "crypto";
 import { getCorsHeaders } from "./_cors";
+import { envPositiveInt } from "./_env";
 import { logError, logInfo } from "./_logger";
 import {
   RATE_LIMIT,
@@ -28,7 +29,7 @@ import {
 const redis = createRedisClient({ automaticDeserialization: false });
 
 const OVERPASS_ENDPOINT = "https://overpass-api.de/api/interpreter";
-const CACHE_TTL = parseInt(process.env.CACHE_TTL_SECONDS || "604800"); // 7 days
+const CACHE_TTL = envPositiveInt("CACHE_TTL_SECONDS", 604800); // 7 days
 
 // vercel.json gives this function maxDuration 30. Overpass gets 22 s to run the
 // query and the HTTP call is aborted at 27 s, which leaves room to still emit a
@@ -177,30 +178,6 @@ export default async function handler(req: Request): Promise<Response> {
   let redisDegraded = false;
 
   try {
-    // Rate limiting (fail-open: a Redis outage must not lock everyone out)
-    const limit = await bestEffort("overpass:ratelimit", () =>
-      checkRateLimit(redis, `ratelimit:${clientIp(req)}`)
-    );
-    if (!limit.ok) {
-      redisDegraded = true;
-    }
-    const rateLimit: RateLimitResult = limit.ok
-      ? limit.value
-      : { allowed: true, remaining: RATE_LIMIT, resetIn: 60 };
-
-    if (!rateLimit.allowed) {
-      return jsonResponse(
-        { error: "Rate limit exceeded", resetIn: rateLimit.resetIn },
-        429,
-        {
-          ...corsHeaders,
-          "X-RateLimit-Remaining": "0",
-          "X-RateLimit-Reset": rateLimit.resetIn.toString(),
-          "Retry-After": rateLimit.resetIn.toString(),
-        }
-      );
-    }
-
     // Parse request
     let body: unknown;
     try {
@@ -252,9 +229,36 @@ export default async function handler(req: Request): Promise<Response> {
           ...corsHeaders,
           "Content-Type": "application/json",
           "X-Cache": "HIT",
-          "X-RateLimit-Remaining": rateLimit.remaining.toString(),
         },
       });
+    }
+
+    // Rate limiting (fail-open: a Redis outage must not lock everyone out).
+    // Checked only here, on a cache miss: the limit exists to ration our
+    // Overpass quota, and a request answered from the cache spends none of
+    // it. Counting hits would lock a hiker out for re-opening a route they
+    // already searched.
+    const limit = await bestEffort("overpass:ratelimit", () =>
+      checkRateLimit(redis, `ratelimit:${clientIp(req)}`)
+    );
+    if (!limit.ok) {
+      redisDegraded = true;
+    }
+    const rateLimit: RateLimitResult = limit.ok
+      ? limit.value
+      : { allowed: true, remaining: RATE_LIMIT, resetIn: 60 };
+
+    if (!rateLimit.allowed) {
+      return jsonResponse(
+        { error: "Rate limit exceeded", resetIn: rateLimit.resetIn },
+        429,
+        {
+          ...corsHeaders,
+          "X-RateLimit-Remaining": "0",
+          "X-RateLimit-Reset": rateLimit.resetIn.toString(),
+          "Retry-After": rateLimit.resetIn.toString(),
+        }
+      );
     }
 
     // Build and execute query

@@ -6,6 +6,7 @@ import { Chart, registerables } from 'chart.js';
 import { initializeMap, fitMapToBounds, createRoutePolyline, createNumberedMarker, type MapPoint } from '../shared/map-utils.js';
 import { setupUploadArea, showFileInfo, stripExtension } from '../shared/file-utils.js';
 import { PREFS_KEY, savePrefs } from '../shared/prefs.js';
+import { setupErrorBanner, errorText } from '../shared/error-banner.js';
 
 // Register Chart.js components
 Chart.register(...registerables);
@@ -33,6 +34,8 @@ const longestDayEl = document.getElementById('longest-day')!;
 const dayListEl = document.getElementById('day-list')!;
 const downloadCsvBtn = document.getElementById('download-csv')!;
 
+const errorBanner = setupErrorBanner();
+
 // State
 let gpxFile: File | null = null;
 let daylightPlan: DaylightPlan | null = null;
@@ -53,6 +56,7 @@ startDateInput.value = [
 // Setup upload area
 setupUploadArea(gpxUploadArea, gpxFileInput, gpxFileInfo, (file) => {
   gpxFile = file;
+  errorBanner.hide();
   if (file) {
     showFileInfo(gpxUploadArea, gpxFileInfo, file);
     calculateBtn.disabled = false;
@@ -73,12 +77,13 @@ calculateBtn.addEventListener('click', async () => {
   // when the browser's time zone differs from the route's.)
   const startDate = startDateInput.value;
   if (!startDate) {
-    alert('Please select a start date');
+    errorBanner.show('Please select a start date');
     return;
   }
 
   calculateBtn.disabled = true;
   calculateBtn.textContent = 'Calculating...';
+  errorBanner.hide();
 
   try {
     const content = await gpxFile.text();
@@ -151,7 +156,8 @@ calculateBtn.addEventListener('click', async () => {
     renderDayList();
 
   } catch (error) {
-    alert(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    results.setAttribute('hidden', '');
+    errorBanner.show(`Error calculating daylight plan: ${errorText(error)}`);
   } finally {
     calculateBtn.disabled = false;
     calculateBtn.textContent = 'Calculate Daylight Plan';

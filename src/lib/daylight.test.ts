@@ -8,6 +8,8 @@ import {
   formatDateISO,
   formatTime,
   formatDaylightHours,
+  getDaylightRange,
+  getDaylightAlongRoute,
 } from './daylight';
 
 // All assertions in this file use fixed-UTC-offset math (Date.UTC / getTime),
@@ -303,5 +305,98 @@ describe('createDaylightPlan input guards', () => {
     for (const day of plan.days) {
       expect(day.hikingHoursAvailable).toBe(0);
     }
+  });
+});
+
+describe('createDaylightPlan schedule options', () => {
+  // ~55.6 km due north through the Alps; midsummer, ~15.5 h of daylight.
+  const route = [
+    { lat: 45, lon: 7 },
+    { lat: 45.5, lon: 7 },
+  ];
+  const base = { startDate: '2026-06-21', dailyTargetKm: 30, hikingSpeedKmh: 4 };
+
+  it('takes bufferMinutes out of the available hiking hours', () => {
+    const plain = createDaylightPlan(route, base).days[0];
+    const buffered = createDaylightPlan(route, { ...base, bufferMinutes: 90 }).days[0];
+    expect(plain.hikingHoursAvailable - buffered.hikingHoursAvailable).toBeCloseTo(1.5, 6);
+  });
+
+  it('flags night hiking once the buffer no longer fits', () => {
+    // 30 km at 4 km/h is 7.5 h; ~14.5 h are available.
+    expect(createDaylightPlan(route, base).days[0].nightHikingRequired).toBe(false);
+    expect(
+      createDaylightPlan(route, { ...base, bufferMinutes: 8 * 60 }).days[0].nightHikingRequired
+    ).toBe(true);
+  });
+
+  it('reports a start before sunrise for a negative start offset', () => {
+    expect(createDaylightPlan(route, base).days[0].startBeforeSunrise).toBe(false);
+    expect(
+      createDaylightPlan(route, { ...base, startTimeOffset: -60 }).days[0].startBeforeSunrise
+    ).toBe(true);
+  });
+
+  it('separates "needs the reserved evening" from "finishes after sunset"', () => {
+    // Stop 6 h before sunset: 7.5 h of walking no longer fits the window, but
+    // starting 30 min after sunrise it still ends hours before dark.
+    const day = createDaylightPlan(route, { ...base, endTimeOffset: 9 * 60 }).days[0];
+    expect(day.nightHikingRequired).toBe(true);
+    expect(day.endAfterSunset).toBe(false);
+
+    // The whole 55.6 km at 2 km/h is ~28 h: it cannot end before sunset.
+    const long = createDaylightPlan(route, { ...base, dailyTargetKm: 100, hikingSpeedKmh: 2 }).days[0];
+    expect(long.endAfterSunset).toBe(true);
+  });
+});
+
+describe('getDaylightRange', () => {
+  it('steps exact 24 h days from the anchor, whatever the machine time zone', () => {
+    const start = new Date(Date.UTC(2026, 2, 27, 12)); // spans the EU DST change
+    const range = getDaylightRange(48, 11, start, 4);
+    expect(range.map(d => d.date.toISOString())).toEqual([
+      '2026-03-27T12:00:00.000Z',
+      '2026-03-28T12:00:00.000Z',
+      '2026-03-29T12:00:00.000Z',
+      '2026-03-30T12:00:00.000Z',
+    ]);
+  });
+});
+
+describe('getDaylightAlongRoute', () => {
+  const start = new Date(Date.UTC(2026, 5, 21, 12));
+
+  it('spaces samples by distance, not by point index', () => {
+    // 1000 points crammed into the first 1% of the route, then one long leg.
+    const dense = Array.from({ length: 1000 }, (_, i) => ({ lat: i * 0.00001, lon: 0 }));
+    const route = [...dense, { lat: 1, lon: 0 }];
+
+    const [day] = getDaylightAlongRoute(route, start, 1, 5);
+
+    expect(day).toHaveLength(5);
+    expect(day.map(s => Number(s.lat.toFixed(3)))).toEqual([0, 0.25, 0.5, 0.75, 1]);
+    expect(day[0].distanceFromStart).toBe(0);
+    expect(day[4].distanceFromStart).toBeCloseTo(111.19, 1);
+  });
+
+  it('returns one row per day, each on its own date', () => {
+    const route = [
+      { lat: 0, lon: 0 },
+      { lat: 1, lon: 0 },
+    ];
+    const days = getDaylightAlongRoute(route, start, 3, 2);
+    expect(days).toHaveLength(3);
+    expect(days.map(d => d[0].date.toISOString().slice(0, 10))).toEqual([
+      '2026-06-21',
+      '2026-06-22',
+      '2026-06-23',
+    ]);
+    expect(days[0]).toHaveLength(6);
+  });
+
+  it('handles an empty route, a single point and zero days', () => {
+    expect(getDaylightAlongRoute([], start, 2)).toEqual([]);
+    expect(getDaylightAlongRoute([{ lat: 0, lon: 0 }], start, 0)).toEqual([]);
+    expect(getDaylightAlongRoute([{ lat: 10, lon: 20 }], start, 2)[1]).toHaveLength(1);
   });
 });
