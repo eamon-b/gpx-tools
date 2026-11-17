@@ -23,7 +23,6 @@ export type {
   OptimizationOptions,
   OptimizationResult,
   OptimizationStats,
-  BatchOptimizationStats,
 } from "./types";
 
 // GPX Parser
@@ -88,13 +87,11 @@ export type { GpxProcessResult } from "./gpx-datasheet";
 // GPX Optimizer
 export {
   optimizeGpx,
-  optimizeGpxBatch,
   douglasPeucker,
   removeElevationSpikes,
   smoothElevation,
   calculateTrackDistance,
   calculateElevationStats,
-  truncateTrack,
   truncateTracks,
   roundCoordinates,
   generateOptimizedGpx,
@@ -106,9 +103,7 @@ export {
 export {
   compareRoutes,
   calculateRouteStats,
-  formatComparisonSummary,
   exportComparisonToCSV,
-  mergeRoutes,
 } from "./route-comparison";
 export type {
   RoutePoint,
@@ -206,7 +201,5 @@ export {
   apiClient,
   proxyPOIFetcher,
   toPOIRequest,
-  getBoundsFromPoints,
-  splitBounds,
 } from "./api-client";
 export type { POIRequest } from "./api-client";

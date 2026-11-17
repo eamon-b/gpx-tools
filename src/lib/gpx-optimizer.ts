@@ -312,71 +312,6 @@ export function calculateElevationStats(
 }
 
 /**
- * Truncate track by distance from start and/or end
- * Returns truncated points array
- *
- * @param points - Array of GPS points
- * @param truncateStartMeters - Distance in meters to remove from start (0 = disabled)
- * @param truncateEndMeters - Distance in meters to remove from end (0 = disabled)
- * @returns Truncated array preserving at least 2 points from the remaining segment
- */
-export function truncateTrack(
-  points: GpxPoint[],
-  truncateStartMeters: number,
-  truncateEndMeters: number
-): GpxPoint[] {
-  if (points.length < 2) return points;
-
-  let startIndex = 0;
-  let endIndex = points.length - 1;
-
-  // Find start index
-  if (truncateStartMeters > 0) {
-    let accumulatedDistance = 0;
-    for (let i = 1; i < points.length; i++) {
-      accumulatedDistance += haversineDistance3D(
-        points[i - 1].lat, points[i - 1].lon, points[i - 1].ele,
-        points[i].lat, points[i].lon, points[i].ele
-      );
-      if (accumulatedDistance >= truncateStartMeters) {
-        startIndex = i;
-        break;
-      }
-    }
-  }
-
-  // Find end index
-  if (truncateEndMeters > 0) {
-    let accumulatedDistance = 0;
-    for (let i = points.length - 1; i > startIndex; i--) {
-      accumulatedDistance += haversineDistance3D(
-        points[i].lat, points[i].lon, points[i].ele,
-        points[i - 1].lat, points[i - 1].lon, points[i - 1].ele
-      );
-      if (accumulatedDistance >= truncateEndMeters) {
-        endIndex = i;
-        break;
-      }
-    }
-  }
-
-  // Ensure we have at least 2 points from the remaining segment
-  if (endIndex - startIndex < 1) {
-    // Truncation too aggressive - preserve what's left
-    if (startIndex < points.length - 1) {
-      // Keep from startIndex to end
-      endIndex = Math.min(startIndex + 1, points.length - 1);
-    } else {
-      // Start truncation consumed everything - keep last 2 points
-      startIndex = Math.max(0, points.length - 2);
-      endIndex = points.length - 1;
-    }
-  }
-
-  return points.slice(startIndex, endIndex + 1);
-}
-
-/**
  * Truncate a set of tracks at the file level.
  *
  * truncateStart trims from the beginning of the first track's first segment;
@@ -429,7 +364,7 @@ export function truncateTracks(
   let startIndex = 0;
   let endIndex = flat.length - 1;
 
-  // Find start index (same semantics as truncateTrack, but file-wide)
+  // Find start index: the first point at or beyond the trim distance
   if (truncateStartMeters > 0) {
     let accumulatedDistance = 0;
     // If the requested trim exceeds the available distance, trim everything
@@ -881,14 +816,4 @@ export function optimizeGpx(
     warnings,
     passed: warnings.length === 0
   };
-}
-
-/**
- * Batch process multiple GPX files
- */
-export function optimizeGpxBatch(
-  files: Array<{ name: string; content: string }>,
-  options: Partial<OptimizationOptions> = {}
-): OptimizationResult[] {
-  return files.map(file => optimizeGpx(file.content, file.name, options));
 }

@@ -1,6 +1,6 @@
 # GPX Tools
 
-A web application for trail planning and GPX file processing. Features both client-side tools and serverless API endpoints for route enrichment with POI data and elevation information.
+A web application for trail planning and GPX file processing. Features client-side tools and a serverless API endpoint for route enrichment with POI data.
 
 ## Features
 
@@ -73,7 +73,7 @@ vercel dev
 
 ### Automated Tests
 
-The project uses [Vitest](https://vitest.dev/) with jsdom for testing. Tests are colocated with the code they cover: every module in `src/lib/` and the `overpass` and `elevation` API handlers have a `*.test.ts` next to them.
+The project uses [Vitest](https://vitest.dev/) with jsdom for testing. Tests are colocated with the code they cover: every module in `src/lib/` and the API handlers have a `*.test.ts` next to them.
 
 ```bash
 # Run all tests
@@ -109,13 +109,12 @@ npm test -- src/lib/distance.test.ts
 
 ## API Endpoints
 
-The application includes serverless API endpoints for POI and elevation data:
+The application includes serverless API endpoints for POI data:
 
 | Endpoint | Description |
 |----------|-------------|
 | `POST /api/overpass` | Query OpenStreetMap for POIs along a route corridor (`{corridor, radiusMeters, types}`, max 400 vertices and 10 km radius) or, as a fallback, within a bounding box (`{bounds, types}`, max 1.5° per side). `types` must be a non-empty subset of `water`, `camping`, `resupply`, `restaurant`, `transport`, `emergency`. Returns the raw Overpass JSON. |
-| `POST /api/elevation` | Get elevation data for a list of coordinates |
-| `GET /api/health` | Health check for all external services |
+| `GET /api/health` | Health check for Redis and Overpass |
 
 Request bodies for `/api/overpass` (corridor vertices travel as compact `[lat, lon]` pairs):
 
@@ -125,12 +124,11 @@ Request bodies for `/api/overpass` (corridor vertices travel as compact `[lat, l
 ```
 
 Features:
-- Rate limiting per IP (configurable; default 10 requests/minute for POI queries, 30 for elevation; `X-RateLimit-Remaining`). Only requests that reach the upstream service count: responses served from the cache are free
-- `/api/health` reuses a probe result for 30 seconds, so polling it does not hammer Redis, Overpass or Open-Elevation
+- Rate limiting per IP (configurable; default 10 requests/minute; `X-RateLimit-Remaining`). Only requests that reach the upstream service count: responses served from the cache are free
+- `/api/health` reuses a probe result for 30 seconds, so polling it does not hammer Redis or Overpass
 - Response caching via Redis (Upstash), keyed by the coordinate-rounded request (`X-Cache: HIT` / `MISS` / `BYPASS`)
 - Redis is best effort: if it is unreachable the request is still served (cache bypassed, rate limit fails open)
 - Transient upstream failures (Overpass 429/504 or a timeout) are returned as `503` with `Retry-After`; other upstream errors as `502`
-- Circuit breaker for external API failures (elevation)
 - Automatic retry with exponential backoff (client-side)
 
 ## Deployment
@@ -158,7 +156,6 @@ vercel --prod
    ```bash
    vercel env add ALLOWED_ORIGINS          # Required: comma-separated allowed origins
    vercel env add RATE_LIMIT_PER_MINUTE    # Optional, default: 10 (POI queries per IP)
-   vercel env add ELEVATION_RATE_LIMIT_PER_MINUTE  # Optional, default: 30
    vercel env add CACHE_TTL_SECONDS        # Optional, default: 604800 (7 days)
    ```
 
@@ -169,5 +166,5 @@ vercel --prod
 
 ```bash
 curl https://your-url/api/health
-# Expected: {"status":"healthy","checks":{"kv":true,"overpass":true,"elevation":true}}
+# Expected: {"status":"healthy","checks":{"kv":true,"overpass":true}}
 ```

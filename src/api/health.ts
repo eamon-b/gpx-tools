@@ -7,7 +7,7 @@ const HEALTH_CHECK_KEY = 'health:check';
 
 /**
  * How long one probe result is reused. The endpoint is public and linked from
- * the landing page, and a probe is a Redis write plus two requests to services
+ * the landing page, and a probe is a Redis write plus a request to a service
  * other people run for free; nobody needs a fresher answer than this.
  */
 const RESULT_TTL_MS = 30_000;
@@ -72,28 +72,22 @@ async function checkUpstream(context: string, url: string): Promise<Check> {
 
 async function probe(): Promise<HealthResult> {
   // Independent checks: run them side by side rather than up to 15 s in a row.
-  const [kv, overpass, elevation] = await Promise.all([
+  const [kv, overpass] = await Promise.all([
     checkRedis(),
     checkUpstream('health:overpass', 'https://overpass-api.de/api/status'),
-    checkUpstream(
-      'health:elevation',
-      'https://api.open-elevation.com/api/v1/lookup?locations=0,0'
-    ),
   ]);
 
   const checks: Record<string, boolean> = {
     kv: kv.ok,
     overpass: overpass.ok,
-    elevation: elevation.ok,
   };
   const details: Record<string, string> = {};
   if (kv.detail) details.kv = kv.detail;
   if (overpass.detail) details.overpass = overpass.detail;
-  if (elevation.detail) details.elevation = elevation.detail;
 
   const allHealthy = Object.values(checks).every(v => v);
-  // Degraded if at least KV works but external services are down
-  const isDegraded = checks.kv && (!checks.overpass || !checks.elevation);
+  // Degraded if at least KV works but the external service is down
+  const isDegraded = checks.kv && !checks.overpass;
 
   return {
     status: allHealthy || isDegraded ? 200 : 503,
@@ -139,7 +133,7 @@ export default async function handler(req: Request): Promise<Response> {
   }
 
   // A recent result answers the request without touching Redis or anyone
-  // else's servers, however often the endpoint is hit.
+  // else's server, however often the endpoint is hit.
   const now = Date.now();
   if (cached && now - cached.at < RESULT_TTL_MS) {
     return respond(req, cached.result, corsHeaders, now - cached.at);

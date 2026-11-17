@@ -42,12 +42,6 @@ export type POIRequest =
     }
   | { bounds: BBox; types: POIType[] };
 
-interface ElevationResult {
-  lat: number;
-  lon: number;
-  elevation: number | null;
-}
-
 interface RetryOptions {
   maxRetries: number;
   baseDelayMs: number;
@@ -328,73 +322,6 @@ export class APIClient {
     );
   }
 
-  async fetchElevations(
-    locations: { lat: number; lon: number }[]
-  ): Promise<ElevationResult[]> {
-    return this.fetchWithRetry(
-      `${this.baseUrl}/elevation`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ locations }),
-      },
-      async (response) => {
-        const data = await response.json();
-        return data.results;
-      }
-    );
-  }
-
-  // Fetch elevations in batches with partial failure handling
-  async fetchElevationsBatched(
-    locations: { lat: number; lon: number }[],
-    batchSize: number = 200,
-    onProgress?: (completed: number, total: number) => void
-  ): Promise<ElevationResult[]> {
-    const results: ElevationResult[] = [];
-    const batches: { lat: number; lon: number }[][] = [];
-
-    // Split into batches
-    for (let i = 0; i < locations.length; i += batchSize) {
-      batches.push(locations.slice(i, i + batchSize));
-    }
-
-    let completed = 0;
-    for (const batch of batches) {
-      try {
-        const batchResults = await this.fetchElevations(batch);
-        results.push(...batchResults);
-      } catch (error) {
-        // On failure, fill with nulls so we don't lose position alignment
-        console.warn("Elevation batch failed:", error);
-        results.push(
-          ...batch.map((loc) => ({
-            lat: loc.lat,
-            lon: loc.lon,
-            elevation: null,
-          }))
-        );
-      }
-
-      completed += batch.length;
-      onProgress?.(completed, locations.length);
-
-      // Small delay between batches to be nice to the server
-      if (completed < locations.length) {
-        await sleep(100);
-      }
-    }
-
-    return results;
-  }
-
-  async checkHealth(): Promise<{
-    status: string;
-    checks: Record<string, boolean>;
-  }> {
-    const response = await fetch(`${this.baseUrl}/health`);
-    return response.json();
-  }
 }
 
 // Singleton instance
@@ -410,75 +337,6 @@ export const apiClient = new APIClient();
 export const proxyPOIFetcher: POIFetcher = (area, types, signal) =>
   apiClient.fetchPOIs(area, types, signal);
 
-/**
- * Bounding box around a set of points, padded by `bufferKm`.
- * Retained for bbox-mode callers; `enrichRoute` uses corridors instead.
- */
-export function getBoundsFromPoints(
-  points: { lat: number; lon: number }[],
-  bufferKm: number = 5
-): BBox {
-  // A plain loop: Math.min(...lats) overflows the call stack on a long track.
-  let south = Infinity;
-  let north = -Infinity;
-  let west = Infinity;
-  let east = -Infinity;
-  for (const p of points) {
-    if (p.lat < south) south = p.lat;
-    if (p.lat > north) north = p.lat;
-    if (p.lon < west) west = p.lon;
-    if (p.lon > east) east = p.lon;
-  }
-
-  // Approximate degrees per km
-  const latBuffer = bufferKm / 111;
-  const lonBuffer =
-    bufferKm / (111 * Math.cos((((south + north) / 2) * Math.PI) / 180));
-
-  return {
-    south: south - latBuffer,
-    north: north + latBuffer,
-    west: west - lonBuffer,
-    east: east + lonBuffer,
-  };
-}
-
-/**
- * Split large bounding boxes into smaller chunks for API requests.
- *
- * The server enforces a maximum of 1.5 degrees per side (CORRIDOR_LIMITS.maxBBoxDegrees),
- * so bbox-mode callers covering long trails must chunk and merge client-side.
- * Corridor mode (the default in enrichRoute) does not need this.
- */
-export function splitBounds(bounds: BBox, maxDegrees: number = 1.5): BBox[] {
-  const latSpan = bounds.north - bounds.south;
-  const lonSpan = bounds.east - bounds.west;
-
-  if (latSpan <= maxDegrees && lonSpan <= maxDegrees) {
-    return [bounds];
-  }
-
-  const latChunks = Math.ceil(latSpan / maxDegrees);
-  const lonChunks = Math.ceil(lonSpan / maxDegrees);
-  const latStep = latSpan / latChunks;
-  const lonStep = lonSpan / lonChunks;
-
-  const chunks: BBox[] = [];
-
-  for (let i = 0; i < latChunks; i++) {
-    for (let j = 0; j < lonChunks; j++) {
-      chunks.push({
-        south: bounds.south + i * latStep,
-        north: bounds.south + (i + 1) * latStep,
-        west: bounds.west + j * lonStep,
-        east: bounds.west + (j + 1) * lonStep,
-      });
-    }
-  }
-
-  return chunks;
-}
-
 // Export types for consumers (POI/POIType/areas come from osm-poi — one definition only)
-export type { POI, POIType, OverpassArea, BBox, ElevationResult, RetryOptions };
+export type { POI, POIType, OverpassArea, BBox, RetryOptions };
 export type { POIFetcher };
