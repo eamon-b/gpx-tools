@@ -5,7 +5,6 @@ import {
   smoothElevation,
   calculateTrackDistance,
   calculateElevationStats,
-  truncateTrack,
   truncateTracks,
   roundCoordinates,
   optimizeGpx,
@@ -373,68 +372,6 @@ describe('calculateElevationStats', () => {
 
     // Only the 100->110 change should count, but it's calculated cumulatively
     expect(stats.gain).toBe(8);
-  });
-});
-
-describe('truncateTrack', () => {
-  it('should return same points when no truncation specified', () => {
-    const points: GpxPoint[] = [
-      { lat: -37.8136, lon: 144.9631, ele: 0, time: null },
-      { lat: -37.8200, lon: 144.9700, ele: 0, time: null }
-    ];
-
-    const result = truncateTrack(points, 0, 0);
-
-    expect(result).toEqual(points);
-  });
-
-  it('should return same points when fewer than 2 points', () => {
-    const points: GpxPoint[] = [
-      { lat: -37.8136, lon: 144.9631, ele: 0, time: null }
-    ];
-
-    const result = truncateTrack(points, 100, 100);
-
-    expect(result).toEqual(points);
-  });
-
-  it('should truncate from start', () => {
-    // Create points about 1km apart
-    const points: GpxPoint[] = [
-      { lat: -37.8000, lon: 144.9000, ele: 0, time: null },
-      { lat: -37.8100, lon: 144.9000, ele: 0, time: null }, // ~1.1km from start
-      { lat: -37.8200, lon: 144.9000, ele: 0, time: null }  // ~2.2km from start
-    ];
-
-    const result = truncateTrack(points, 500, 0); // truncate 500m from start
-
-    expect(result.length).toBeLessThanOrEqual(points.length);
-    expect(result[0].lat).not.toBe(-37.8000); // start should be removed
-  });
-
-  it('should truncate from end', () => {
-    const points: GpxPoint[] = [
-      { lat: -37.8000, lon: 144.9000, ele: 0, time: null },
-      { lat: -37.8100, lon: 144.9000, ele: 0, time: null },
-      { lat: -37.8200, lon: 144.9000, ele: 0, time: null }
-    ];
-
-    const result = truncateTrack(points, 0, 500);
-
-    expect(result.length).toBeLessThanOrEqual(points.length);
-  });
-
-  it('should preserve at least 2 points', () => {
-    const points: GpxPoint[] = [
-      { lat: -37.8000, lon: 144.9000, ele: 0, time: null },
-      { lat: -37.8010, lon: 144.9000, ele: 0, time: null },
-      { lat: -37.8020, lon: 144.9000, ele: 0, time: null }
-    ];
-
-    // Truncate more than track length
-    const result = truncateTrack(points, 100000, 100000);
-
-    expect(result.length).toBeGreaterThanOrEqual(2);
   });
 });
 

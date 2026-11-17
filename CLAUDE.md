@@ -20,7 +20,7 @@ vercel dev           # Run with serverless functions (requires Vercel CLI)
 **GPX Tools** is a TypeScript web application for GPS route processing with two entry points:
 
 1. **Web UI** (`src/web/`) - Vanilla TypeScript client-side tools built with Vite
-2. **Serverless API** (`src/api/`) - Vercel functions for POI queries and elevation data
+2. **Serverless API** (`src/api/`) - Vercel functions for POI queries
 
 ### Core Library (`src/lib/`)
 
@@ -39,7 +39,7 @@ All processing logic lives here as reusable modules exported via `index.ts`:
 - `route-comparison.ts` - Compare two routes. A point is "shared" when it is within the threshold of the other route's LINE (point-to-segment, not vertex-to-vertex), looked up through a grid index over the segments (`createPolylineIndex`) - symmetric in both routes, and linear in their size
 - `daylight.ts` - Sunrise/sunset via suncalc. Days are always exact 24 h steps from an anchor (never `setDate`, which moves in the machine's time zone); `getDaylightAlongRoute` samples by distance
 - `gpx-datasheet.ts` - Generate datasheets with waypoint visits, resupply points, distances
-- `api-client.ts` - Client-side wrapper for POI/elevation API calls
+- `api-client.ts` - Client-side wrapper for the POI API (retries, backoff, cancellation)
 
 ### Web Tools (`src/web/tools/`)
 
@@ -50,17 +50,16 @@ What the tools have in common lives in `src/web/shared/`: `file-utils.ts` (the s
 ### Serverless API (`src/api/`)
 
 - `overpass.ts` - OpenStreetMap POI proxy. Accepts a corridor (`{corridor, radiusMeters, types}`, where `corridor` is one polyline `[[lat,lon],...]` or several `[[[lat,lon],...],...]`, 400 vertices total) or bbox (`{bounds, types}`) body, validates it with `validateOverpassArea`/`parseOverpassArea` and builds the query with `buildOverpassQuery` from `src/lib/osm-poi.ts` - it owns no tag rules of its own. Coordinates are canonicalised with `roundCoord` so the sha256 cache key and the query text agree.
-- `elevation.ts` - Elevation data enrichment. Cache reads are one `MGET` and writes one pipeline per upstream batch - never a Redis call per point
 - `health.ts` - Service health check (GET/HEAD). A probe result is reused for 30 s per instance and concurrent requests share one probe; fresh probes are rate limited per IP
 - `_cors.ts`, `_logger.ts`, `_env.ts` - Shared utilities. Read numeric settings with `envPositiveInt`, never bare `parseInt(process.env.X)`: NaN silently disables a limit
 
-API features: CORS (configured via `ALLOWED_ORIGINS` env), per-IP rate limiting shared in `_ratelimit.ts` (overpass 10 req/min via `RATE_LIMIT_PER_MINUTE`, elevation 30 via `ELEVATION_RATE_LIMIT_PER_MINUTE`, both fail open and are charged only for upstream work - a response served from the cache does not count), Redis caching via `@upstash/redis` (shared client in `_redis.ts`).
+API features: CORS (configured via `ALLOWED_ORIGINS` env), per-IP rate limiting shared in `_ratelimit.ts` (overpass 10 req/min via `RATE_LIMIT_PER_MINUTE`; fails open, and is charged only for upstream work - a response served from the cache does not count), Redis caching via `@upstash/redis` (shared client in `_redis.ts`).
 
 `POI_CATALOG` in `src/lib/osm-poi.ts` is the single source of truth for the OSM tag rules: the same rules generate the server's Overpass selectors and the client's `categorizePOI` predicate, so add or change a POI tag there and nowhere else.
 
 Corridor queries carry a global `[bbox:]` setting padded by the radius (without it Overpass walks the planet-wide tag index per selector and times out on long routes), and `enrichRoute` packs short disjoint polylines (side trips) into one query via `packCorridorChunks`. A 200 from Overpass is validated with `overpassPayloadError` before it is cached or returned: runtime errors (query timed out) arrive as 200 with a `remark`.
 
-Redis is best effort in `overpass.ts` and `elevation.ts`: cache reads/writes, the rate-limit counter and (elevation) the circuit breaker are wrapped so an outage logs and falls open (`X-Cache: BYPASS` on overpass) instead of failing the request. The elevation circuit breaker opens after 5 upstream failures, refuses for 60 s, then admits a single probe (`isCircuitOpen` claims it by restarting the timeout): success closes it, failure re-opens it. Timeouts are tied to `vercel.json`'s `maxDuration: 30` - Overpass `[timeout:22]`, HTTP abort at 27 s; an upstream 429/504 or timeout becomes a `503` with `Retry-After`.
+Redis is best effort in `overpass.ts`: cache reads/writes and the rate-limit counter are wrapped so an outage logs and falls open (`X-Cache: BYPASS`) instead of failing the request. Timeouts are tied to `vercel.json`'s `maxDuration: 30` - Overpass `[timeout:22]`, HTTP abort at 27 s; an upstream 429/504 or timeout becomes a `503` with `Retry-After`.
 
 **Note:** Root `api/` contains thin re-export stubs (e.g. `export { default } from '../src/api/overpass'`) required by Vercel's function discovery. Actual logic lives in `src/api/`.
 
@@ -84,7 +83,7 @@ Redis is best effort in `overpass.ts` and `elevation.ts`: cache reads/writes, th
 
 Required for `vercel dev` (serverless functions):
 - `ALLOWED_ORIGINS` - Comma-separated allowed CORS origins
-- Redis (Upstash) env vars - `KV_REST_API_URL` / `KV_REST_API_TOKEN` (from Vercel's Redis integration) or `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` - for caching in `overpass.ts`, `elevation.ts`, and `health.ts`
+- Redis (Upstash) env vars - `KV_REST_API_URL` / `KV_REST_API_TOKEN` (from Vercel's Redis integration) or `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` - for caching in `overpass.ts` and the check in `health.ts`
 
 These are not needed for `npm run dev` (static site only).
 

@@ -53,9 +53,9 @@ describe('health handler', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({
       status: 'healthy',
-      checks: { kv: true, overpass: true, elevation: true },
+      checks: { kv: true, overpass: true },
     });
-    expect(fn).toHaveBeenCalledTimes(2);
+    expect(fn).toHaveBeenCalledTimes(1);
   });
 
   it('reuses a recent result instead of probing on every request', async () => {
@@ -66,7 +66,7 @@ describe('health handler', () => {
       expect((await handler(get())).status).toBe(200);
     }
 
-    expect(fn).toHaveBeenCalledTimes(2); // one probe: overpass + elevation
+    expect(fn).toHaveBeenCalledTimes(1); // one probe
     expect(redisMock.set).toHaveBeenCalledTimes(1);
     expect(redisMock.incr).toHaveBeenCalledTimes(1);
   });
@@ -79,7 +79,7 @@ describe('health handler', () => {
     vi.setSystemTime(Date.now() + 31_000);
     await handler(get());
 
-    expect(fn).toHaveBeenCalledTimes(4);
+    expect(fn).toHaveBeenCalledTimes(2);
   });
 
   it('shares one probe between concurrent requests', async () => {
@@ -88,7 +88,7 @@ describe('health handler', () => {
     const responses = await Promise.all([handler(get()), handler(get()), handler(get())]);
 
     expect(responses.map(r => r.status)).toEqual([200, 200, 200]);
-    expect(fn).toHaveBeenCalledTimes(2);
+    expect(fn).toHaveBeenCalledTimes(1);
   });
 
   it('rate limits fresh probes per IP', async () => {
@@ -126,7 +126,7 @@ describe('health handler', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({
       status: 'degraded',
-      checks: { kv: true, overpass: false, elevation: false },
+      checks: { kv: true, overpass: false },
       details: { overpass: 'HTTP 503' },
     });
   });

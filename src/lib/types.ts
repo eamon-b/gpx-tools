@@ -200,12 +200,3 @@ export interface OptimizationResult {
   warnings: string[];               // issues detected during processing
   passed: boolean;                  // true if within acceptable tolerances
 }
-
-export interface BatchOptimizationStats {
-  filesProcessed: number;
-  totalOriginalSize: number;
-  totalOptimizedSize: number;
-  averageReduction: number;         // percentage
-  warnings: string[];
-}
-

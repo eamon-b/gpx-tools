@@ -1,3 +1,5 @@
+import { logWarn } from './_logger';
+
 /**
  * Read a positive integer setting from the environment.
  *
@@ -14,15 +16,10 @@ export function envPositiveInt(name: string, fallback: number): number {
   }
   const value = Number(raw.trim());
   if (!Number.isInteger(value) || value <= 0) {
-    console.warn(
-      JSON.stringify({
-        level: 'warn',
-        context: 'env',
-        message: `${name} must be a positive integer; using the default`,
-        value: raw,
-        fallback,
-      })
-    );
+    logWarn('env', `${name} must be a positive integer; using the default`, {
+      value: raw,
+      fallback,
+    });
     return fallback;
   }
   return value;

@@ -502,37 +502,6 @@ export function compareRoutes(
 }
 
 /**
- * Format a route comparison as a summary string
- */
-export function formatComparisonSummary(comparison: RouteComparison): string {
-  const lines = [
-    '=== Route Comparison Summary ===',
-    '',
-    'Route 1:',
-    `  Distance: ${comparison.route1Stats.totalDistance.toFixed(1)} km`,
-    `  Ascent: ${comparison.route1Stats.totalAscent.toFixed(0)} m`,
-    `  Descent: ${comparison.route1Stats.totalDescent.toFixed(0)} m`,
-    '',
-    'Route 2:',
-    `  Distance: ${comparison.route2Stats.totalDistance.toFixed(1)} km`,
-    `  Ascent: ${comparison.route2Stats.totalAscent.toFixed(0)} m`,
-    `  Descent: ${comparison.route2Stats.totalDescent.toFixed(0)} m`,
-    '',
-    'Comparison:',
-    `  Shared path: ${comparison.sharedDistance.toFixed(1)} km (${comparison.sharedPercentage.toFixed(1)}%)`,
-    `  Distance difference: ${comparison.distanceDiff >= 0 ? '+' : ''}${comparison.distanceDiff.toFixed(1)} km`,
-    `  Ascent difference: ${comparison.elevationDiff.ascent >= 0 ? '+' : ''}${comparison.elevationDiff.ascent.toFixed(0)} m`,
-    '',
-    `  Divergence points: ${comparison.divergencePoints.length}`,
-    `  Convergence points: ${comparison.convergencePoints.length}`,
-    `  Route 1 unique segments: ${comparison.route1OnlySegments.length}`,
-    `  Route 2 unique segments: ${comparison.route2OnlySegments.length}`,
-  ];
-
-  return lines.join('\n');
-}
-
-/**
  * Export comparison to CSV format
  */
 export function exportComparisonToCSV(comparison: RouteComparison): string {
@@ -573,24 +542,4 @@ export function exportComparisonToCSV(comparison: RouteComparison): string {
   addSegmentRows(comparison.route2OnlySegments, 'Route 2 Only');
 
   return lines.join('\n');
-}
-
-/**
- * Merge two routes, preferring shared segments and including alternatives
- */
-export function mergeRoutes(
-  route1: RoutePoint[],
-  _route2: RoutePoint[],
-  comparison: RouteComparison
-): {
-  mainRoute: RoutePoint[];
-  alternatives: RouteSegment[];
-} {
-  // Use route1 as the base, marking route2-only segments as alternatives
-  const mainRoute = [...route1];
-
-  // The route2-only segments are already identified as alternatives
-  const alternatives = comparison.route2OnlySegments;
-
-  return { mainRoute, alternatives };
 }
