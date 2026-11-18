@@ -276,3 +276,41 @@ describe('compareRoutes performance', () => {
     expect(elapsed).toBeLessThan(3000);
   });
 });
+
+describe('compareRoutes edge geometry', () => {
+  it('matches along a route that runs more than half way round the globe', () => {
+    // Lat 10, from lon 0 east to lon 200 (= -160): past 180 degrees from its start.
+    const long = Array.from({ length: 401 }, (_, i) => {
+      const lon = i * 0.5;
+      return { lat: 10, lon: lon > 180 ? lon - 360 : lon };
+    });
+    // A short route 33 m north of it, on the far side of the antimeridian.
+    const beside = Array.from({ length: 50 }, (_, i) => ({ lat: 10.0003, lon: -179.9 + i * 0.01 }));
+
+    const comparison = compareRoutes(beside, long, { minSegmentLength: 0 });
+    expect(comparison.sharedPercentage).toBeGreaterThan(99.9);
+    expect(compareRoutes(long, beside, { minSegmentLength: 0 }).sharedSegments.length).toBe(1);
+  });
+
+  it('agrees with a brute-force check near a pole', () => {
+    // Two rings round the pole at 88.5 N, 60 m apart: every point of one is within 100 m of the other.
+    const ring = (lat: number) => Array.from({ length: 361 }, (_, i) => ({ lat, lon: -180 + i }));
+    const inner = ring(88.5);
+    const outer = ring(88.5 - 60 / 111195);
+    expect(compareRoutes(inner, outer, { minSegmentLength: 0 }).sharedPercentage).toBeGreaterThan(99.9);
+    // And 300 m apart, none is.
+    expect(compareRoutes(inner, ring(88.5 - 300 / 111195), { minSegmentLength: 0 }).sharedPercentage).toBe(0);
+  });
+
+  it('measures the tail when the sample step does not land on the last point', () => {
+    // 200 points: a step of 7 last lands on index 196.
+    const a = Array.from({ length: 200 }, (_, i) => ({ lat: 0, lon: i * 0.0005 }));
+    const b = a.map(p => ({ lat: p.lat + 0.0002, lon: p.lon }));
+
+    const comparison = compareRoutes(a, b, { sampleStep: 7, minSegmentLength: 0 });
+    expect(comparison.route1OnlySegments).toHaveLength(0);
+    expect(comparison.route2OnlySegments).toHaveLength(0);
+    expect(comparison.divergencePoints).toHaveLength(0);
+    expect(comparison.sharedSegments[0].endIndex).toBe(199);
+  });
+});

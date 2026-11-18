@@ -131,6 +131,9 @@ export function calculateRouteStats(points: RoutePoint[]): RouteStats {
 
 const METERS_PER_DEGREE = (Math.PI / 180) * EARTH_RADIUS_METERS;
 
+/** Beyond this latitude the segment grid is not trusted; see `createPolylineIndex`. */
+const POLAR_LATITUDE = 85;
+
 /** Normalise a longitude difference into [-180, 180] so antimeridian routes work. */
 function wrapLonDelta(dLon: number): number {
   let d = dLon;
@@ -188,16 +191,23 @@ function createPolylineIndex(points: RoutePoint[], cellMeters: number): Polyline
   const segmentCount = Math.max(n - 1, 1);
   const endOf = (i: number) => Math.min(i + 1, n - 1);
 
+  // Longitudes are unwrapped along the route - each point is the previous one
+  // plus the short way round to it - so the indexed coordinate is continuous
+  // across the antimeridian and for a route spanning more than half the globe.
+  // Wrapping each point against the first one instead would tear such a
+  // route at 180 degrees from its start.
   const lon0 = points[0].lon;
   let minLat = Infinity;
   let maxAbsLat = 0;
-  let minRelLon = Infinity;
+  let minRelLon = 0;
+  let maxRelLon = 0;
   const relLon = new Float64Array(n);
   for (let i = 0; i < n; i++) {
     const p = points[i];
-    relLon[i] = wrapLonDelta(p.lon - lon0);
+    if (i > 0) relLon[i] = relLon[i - 1] + wrapLonDelta(p.lon - points[i - 1].lon);
     if (p.lat < minLat) minLat = p.lat;
     if (relLon[i] < minRelLon) minRelLon = relLon[i];
+    if (relLon[i] > maxRelLon) maxRelLon = relLon[i];
     if (Math.abs(p.lat) > maxAbsLat) maxAbsLat = Math.abs(p.lat);
   }
 
@@ -282,25 +292,44 @@ function createPolylineIndex(points: RoutePoint[], cellMeters: number): Polyline
         }
       };
 
-      const rel = wrapLonDelta(lon - lon0);
       const latReach = radiusMeters / METERS_PER_DEGREE;
       const lonReach = radiusMeters / (METERS_PER_DEGREE * cosMin);
       const rowFrom = rowOf(lat - latReach);
       const rowTo = rowOf(lat + latReach);
-      const colFrom = colOf(rel - lonReach);
-      const colTo = colOf(rel + lonReach);
-      const cellsInReach = (rowTo - rowFrom + 1) * (colTo - colFrom + 1);
 
-      if (!(cellsInReach <= cells.size)) {
-        // The search area holds more cells than the index does (or the radius
-        // is unbounded): measuring every segment is the cheaper way round.
+      // The query's longitude in the route's unwrapped coordinate: every turn
+      // of the globe that lands within reach of the route (one, unless the
+      // route itself runs more than once around).
+      const baseRel = wrapLonDelta(lon - lon0);
+      const turnFrom = Math.ceil((minRelLon - lonReach - baseRel) / 360);
+      const turnTo = Math.floor((maxRelLon + lonReach - baseRel) / 360);
+      const colRanges: [number, number][] = [];
+      let cellsInReach = 0;
+      for (let turn = turnFrom; turn <= turnTo; turn++) {
+        const rel = baseRel + turn * 360;
+        const colFrom = colOf(rel - lonReach);
+        const colTo = colOf(rel + lonReach);
+        colRanges.push([colFrom, colTo]);
+        cellsInReach += (rowTo - rowFrom + 1) * (colTo - colFrom + 1);
+      }
+
+      // Near a pole a degree of longitude shrinks towards nothing and the
+      // grid's fixed column width stops bounding distance, so measure every
+      // segment there instead of trusting the cells.
+      const nearPole = maxAbsLat > POLAR_LATITUDE || Math.abs(lat) + latReach > POLAR_LATITUDE;
+
+      if (nearPole || !(cellsInReach <= cells.size)) {
+        // Also the cheaper way round when the search area holds more cells
+        // than the index does, or the radius is unbounded.
         for (let segment = 0; segment < segmentCount; segment++) measure(segment);
       } else {
-        for (let row = rowFrom; row <= rowTo; row++) {
-          for (let col = colFrom; col <= colTo; col++) {
-            const cell = cells.get(row * ROW_STRIDE + col);
-            if (cell) {
-              for (const segment of cell) measure(segment);
+        for (const [colFrom, colTo] of colRanges) {
+          for (let row = rowFrom; row <= rowTo; row++) {
+            for (let col = colFrom; col <= colTo; col++) {
+              const cell = cells.get(row * ROW_STRIDE + col);
+              if (cell) {
+                for (const segment of cell) measure(segment);
+              }
             }
           }
         }
@@ -331,15 +360,20 @@ function markShared(
   sampleStep: number
 ): boolean[] {
   const shared: boolean[] = new Array(route.length).fill(false);
-  for (let i = 0; i < route.length; i += sampleStep) {
+  // Every Nth point, and always the last: stopping at the final multiple of
+  // the step would leave the tail unmeasured and report it as not shared.
+  const samples: number[] = [];
+  for (let i = 0; i < route.length; i += sampleStep) samples.push(i);
+  if (route.length > 0 && samples[samples.length - 1] !== route.length - 1) {
+    samples.push(route.length - 1);
+  }
+  for (const i of samples) {
     shared[i] = other.nearest(route[i].lat, route[i].lon, thresholdMeters) !== null;
   }
-  if (sampleStep > 1) {
-    for (let i = 0; i + sampleStep < route.length; i += sampleStep) {
-      if (shared[i] && shared[i + sampleStep]) {
-        for (let j = i + 1; j < i + sampleStep; j++) {
-          shared[j] = true;
-        }
+  for (let k = 0; k + 1 < samples.length; k++) {
+    if (shared[samples[k]] && shared[samples[k + 1]]) {
+      for (let j = samples[k] + 1; j < samples[k + 1]; j++) {
+        shared[j] = true;
       }
     }
   }

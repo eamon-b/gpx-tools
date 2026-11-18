@@ -25,7 +25,7 @@ vercel dev           # Run with serverless functions (requires Vercel CLI)
 ### Core Library (`src/lib/`)
 
 All processing logic lives here as reusable modules exported via `index.ts`:
-- `gpx-parser.ts` - GPX XML parsing/generation via DOM APIs. `waypointChildElements` is the one place a `<wpt>`'s name/cmt/desc/link/sym/type are serialised; every writer (including the optimizer's) goes through it. `generateGpx` flattens everything into one track (what the splitter/optimiser want); `writeGpx` serialises a whole `GpxData` - every track with its segments, every waypoint with the optional `type`/`cmt`/`sym`/`link` - for when track boundaries matter
+- `gpx-parser.ts` - GPX XML parsing/generation via DOM APIs. `waypointChildElements` is the one place a `GpxWaypoint`'s name/cmt/desc/link/sym/type are serialised; every writer of one (including the optimizer's) goes through it (`exportPOIsToGPX` writes OSM POIs, not `GpxWaypoint`s, and has its own). `generateGpx` flattens everything into one track (what the splitter/optimiser want); `writeGpx` serialises a whole `GpxData` - every track with its segments, every waypoint with the optional `type`/`cmt`/`sym`/`link` - for when track boundaries matter
 - `kml-parser.ts` - KML/KMZ reader (`parseKml`, `parseKmz` via jszip) producing placemarks with their folder path, geometry and attributes, plus `kmlToGpxData` to map them onto `GpxData` through a caller-supplied `classify`. Trail authorities often publish a richer KMZ than GPX, so this is the way one enters the pipeline. Parsing walks the DOM by `localName`, not CSS selectors, because KML in the wild is inconsistent about namespace prefixes. `parseDescriptionFields` recovers the attribute table that ArcGIS exports bury in `<description>` as HTML; `<ExtendedData>` wins over it when both are present
 - `gpx-splitter.ts` - Split large GPX into chunks
 - `gpx-combiner.ts` - Merge multiple GPX files
@@ -36,7 +36,7 @@ All processing logic lives here as reusable modules exported via `index.ts`:
 - `osm-poi.ts` - POI catalog, Overpass QL builder (`nwr` + `out center`), area validation, corridor chunking, route geometry
 - `overpass-client.ts` - Direct Overpass fetcher (retries/throttling) for Node scripts
 - `poi-enrichment.ts` - OpenStreetMap POI queries
-- `route-comparison.ts` - Compare two routes. A point is "shared" when it is within the threshold of the other route's LINE (point-to-segment, not vertex-to-vertex), looked up through a grid index over the segments (`createPolylineIndex`) - symmetric in both routes, and linear in their size
+- `route-comparison.ts` - Compare two routes. A point is "shared" when it is within the threshold of the other route's LINE (point-to-segment, not vertex-to-vertex), looked up through a grid index over the segments (`createPolylineIndex`) - symmetric in both routes, and linear in their size. Longitudes are unwrapped along the route (antimeridian-safe); above 85 degrees of latitude it measures every segment instead of trusting the grid
 - `daylight.ts` - Sunrise/sunset via suncalc. Days are always exact 24 h steps from an anchor (never `setDate`, which moves in the machine's time zone); `getDaylightAlongRoute` samples by distance
 - `gpx-datasheet.ts` - Generate datasheets with waypoint visits, resupply points, distances
 - `api-client.ts` - Client-side wrapper for the POI API (retries, backoff, cancellation)

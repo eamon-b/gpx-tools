@@ -193,7 +193,7 @@ export function getDaylightRange(
  * points), `samplesPerDay * numDays` of them, and always include both ends.
  * Spacing by point index would bunch the samples wherever the recording is
  * dense - switchbacks, a long lunch - and skip the fast open stretches.
- * `distanceFromStart` is in km. Days are exact 24 h steps from `startDate`,
+ * `distanceFromStart` is in km, measured here along the points given. Days are exact 24 h steps from `startDate`,
  * as in `getDaylightRange`.
  */
 export function getDaylightAlongRoute(
@@ -202,7 +202,9 @@ export function getDaylightAlongRoute(
   numDays: number,
   samplesPerDay: number = 10
 ): LocationDaylight[][] {
-  if (routePoints.length === 0 || !(numDays > 0)) {
+  // Whole days only: 2.5 days is two rows, and the sample count follows the same figure.
+  const days = Math.floor(numDays);
+  if (routePoints.length === 0 || !(days > 0)) {
     return [];
   }
 
@@ -210,14 +212,14 @@ export function getDaylightAlongRoute(
   const totalDist = pointsWithDist[pointsWithDist.length - 1].dist;
   // A route with no length is one place; otherwise at least the two ends.
   const sampleCount =
-    totalDist > 0 ? Math.max(2, Math.floor(numDays) * Math.max(1, Math.floor(samplesPerDay))) : 1;
+    totalDist > 0 ? Math.max(2, days * Math.max(1, Math.floor(samplesPerDay))) : 1;
   const samples = Array.from({ length: sampleCount }, (_, k) => {
     const dist = sampleCount > 1 ? (totalDist * k) / (sampleCount - 1) : 0;
     return { ...findPointAtDistance(pointsWithDist, dist), dist };
   });
 
   const results: LocationDaylight[][] = [];
-  for (let day = 0; day < numDays; day++) {
+  for (let day = 0; day < days; day++) {
     const date = new Date(startDate.getTime() + day * DAY_MS);
     results.push(
       samples.map(sample => ({
@@ -294,7 +296,9 @@ export function createDaylightPlan(
     startTimeOffset = 30,
     endTimeOffset = 30,
   } = options;
-  const bufferMinutes = Math.max(0, options.bufferMinutes ?? 0);
+  // A buffer that is not a number is no buffer, rather than NaN hours available.
+  const requestedBuffer = options.bufferMinutes ?? 0;
+  const bufferMinutes = Number.isFinite(requestedBuffer) ? Math.max(0, requestedBuffer) : 0;
 
   if (routePoints.length === 0) {
     throw new Error('Route has no points');

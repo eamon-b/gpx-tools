@@ -493,6 +493,18 @@ describe("exportPOIsToCSV", () => {
     expect(csv).not.toContain('"Plain Spring"');
   });
 
+  it("leaves coordinates as numbers, negative ones included", () => {
+    // makeEnriched sits at -37.8136, 144.9631.
+    const row = exportPOIsToCSV([makeEnriched("Tap")]).split("\n")[1];
+    expect(row).toBe("Tap,water,-37.813600,144.963100,3.4,0.12,No additional information");
+  });
+
+  it("guards the description as well as the name", () => {
+    const poi = makeEnriched("Tap");
+    poi.tags.description = "+61 400 000 000";
+    expect(exportPOIsToCSV([poi]).split("\n")[1].endsWith(",'+61 400 000 000")).toBe(true);
+  });
+
   it("neutralises a name that a spreadsheet would run as a formula", () => {
     const csv = exportPOIsToCSV([makeEnriched('=HYPERLINK("http://evil.test")')]);
     const row = csv.split("\n")[1];
