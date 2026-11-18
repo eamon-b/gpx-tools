@@ -319,20 +319,23 @@ export async function enrichRoute(
 /**
  * Escape a single CSV field: wrap in double quotes when it contains a comma,
  * quote, or newline, and double any embedded quotes.
- *
- * OSM names and descriptions are free text anyone can edit, so the field is
- * first run through `csvSafeCell`: a POI named `=HYPERLINK(...)` must not
- * become a live formula when the export is opened in a spreadsheet.
  */
 function escapeCSVField(field: string): string {
-  const safe = csvSafeCell(field);
-  if (/[",\r\n]/.test(safe)) {
-    return `"${safe.replace(/"/g, '""')}"`;
+  if (/[",\r\n]/.test(field)) {
+    return `"${field.replace(/"/g, '""')}"`;
   }
-  return safe;
+  return field;
 }
 
-/** Format POIs as CSV for export. */
+/**
+ * Format POIs as CSV for export.
+ *
+ * OSM names and descriptions are free text anyone can edit, so those two
+ * columns go through `csvSafeCell`: a POI named `=HYPERLINK(...)` must not
+ * become a live formula when the export is opened in a spreadsheet. The other
+ * columns are ours (a category, formatted numbers) and are left alone - a
+ * southern or western coordinate starts with `-` and must stay a number.
+ */
 export function exportPOIsToCSV(pois: EnrichedPOI[]): string {
   const headers = [
     "Name",
@@ -344,13 +347,13 @@ export function exportPOIsToCSV(pois: EnrichedPOI[]): string {
     "Description",
   ];
   const rows = pois.map((poi) => [
-    getPOIName(poi),
+    csvSafeCell(getPOIName(poi)),
     poi.category,
     poi.lat.toFixed(6),
     poi.lon.toFixed(6),
     poi.distanceAlongRoute.toFixed(1),
     poi.distanceFromRoute.toFixed(2),
-    getPOIDescription(poi),
+    csvSafeCell(getPOIDescription(poi)),
   ]);
 
   return [

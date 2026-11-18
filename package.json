@@ -1,6 +1,6 @@
 {
   "name": "gpx-tools",
-  "version": "2.0.0",
+  "version": "3.0.0",
   "description": "Route planning tools with GPX processing",
   "type": "module",
   "exports": {

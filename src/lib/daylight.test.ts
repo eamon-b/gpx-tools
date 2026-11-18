@@ -400,3 +400,25 @@ describe('getDaylightAlongRoute', () => {
     expect(getDaylightAlongRoute([{ lat: 10, lon: 20 }], start, 2)[1]).toHaveLength(1);
   });
 });
+
+describe('daylight input edge cases', () => {
+  const route = [
+    { lat: 45, lon: 7 },
+    { lat: 45.5, lon: 7 },
+  ];
+
+  it('treats a buffer that is not a number as no buffer', () => {
+    const base = { startDate: '2026-06-21', dailyTargetKm: 30 };
+    const plain = createDaylightPlan(route, base).days[0];
+    const odd = createDaylightPlan(route, { ...base, bufferMinutes: NaN }).days[0];
+    expect(odd.hikingHoursAvailable).toBe(plain.hikingHoursAvailable);
+  });
+
+  it('counts whole days only, for rows and samples alike', () => {
+    const start = new Date(Date.UTC(2026, 5, 21, 12));
+    const days = getDaylightAlongRoute(route, start, 2.5, 3);
+    expect(days).toHaveLength(2);
+    expect(days[0]).toHaveLength(6);
+    expect(getDaylightAlongRoute(route, start, 0.5, 3)).toEqual([]);
+  });
+});
